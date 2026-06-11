@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=Path, default=EDIT2_ROOT / "reports" / "qa_thinking_sampled.json")
     parser.add_argument("--target", type=int, default=0, help="0 keeps all verified records.")
     parser.add_argument("--max-per-image", type=int, default=3, help="0 disables per-image cap.")
+    parser.add_argument("--dedup-similar", action="store_true", help="Avoid near-duplicate questions for the same image.")
     parser.add_argument("--seed", type=int, default=20260611)
     return parser.parse_args()
 
@@ -33,6 +35,43 @@ def difficulty_score(record: dict[str, Any]) -> int:
     if difficulty == "medium":
         return 2 + steps
     return 1 + steps
+
+
+def question_signature(question: str) -> set[str]:
+    text = re.sub(r"[^a-z0-9\s]", " ", question.lower())
+    stop = {
+        "the",
+        "and",
+        "or",
+        "for",
+        "from",
+        "with",
+        "which",
+        "what",
+        "chart",
+        "plot",
+        "figure",
+        "shown",
+        "value",
+        "values",
+        "mean",
+        "approximate",
+    }
+    return {token for token in text.split() if len(token) > 2 and token not in stop}
+
+
+def too_similar(question: str, existing: list[str], threshold: float = 0.72) -> bool:
+    sig = question_signature(question)
+    if not sig:
+        return True
+    for old in existing:
+        old_sig = question_signature(old)
+        if not old_sig:
+            continue
+        overlap = len(sig & old_sig) / max(len(sig | old_sig), 1)
+        if overlap >= threshold:
+            return True
+    return False
 
 
 def main() -> int:
@@ -62,13 +101,17 @@ def main() -> int:
 
         selected = []
         per_image = Counter()
+        questions_by_image: dict[str, list[str]] = defaultdict(list)
 
         def try_add(record: dict[str, Any]) -> bool:
             cid = (record.get("source") or {}).get("candidate_id") or record.get("candidate_id")
             if args.max_per_image and per_image[cid] >= args.max_per_image:
                 return False
+            if args.dedup_similar and too_similar(str(record.get("question") or ""), questions_by_image[cid]):
+                return False
             selected.append(record)
             per_image[cid] += 1
+            questions_by_image[cid].append(str(record.get("question") or ""))
             return True
 
         for task, desired in target_by_task.items():
@@ -97,6 +140,7 @@ def main() -> int:
         "target": args.target,
         "selected": len(selected),
         "max_per_image": args.max_per_image,
+        "dedup_similar": args.dedup_similar,
         "by_task": dict(Counter(str(r.get("task_type")) for r in selected).most_common()),
         "by_answer_type": dict(Counter(str(r.get("answer_type")) for r in selected).most_common()),
         "by_difficulty": dict(Counter(str(r.get("difficulty")) for r in selected).most_common()),

@@ -25,7 +25,7 @@ from common_v2 import (
 
 CLASSIFIER_PROMPT = """You are filtering arXiv figures for a chart-reasoning dataset.
 
-Use the image first. Caption text is auxiliary only.
+Use the image first. Caption text is auxiliary only. The current image may be a single extracted panel from a larger multi-panel figure; ignore caption references to panels, datasets, or subfigures that are not visible in the current image.
 
 Keep real charts/plots suitable for visual question answering and dense captioning.
 Reject model architecture diagrams, flowcharts, pipelines, algorithm diagrams, formula screenshots, table screenshots, code/UI screenshots, natural/medical/remote-sensing/microscopy images, and qualitative examples unless the visual itself is a chart, heatmap, matrix plot, or confusion matrix.
@@ -33,7 +33,7 @@ Reject model architecture diagrams, flowcharts, pipelines, algorithm diagrams, f
 You must choose chart_types only from this closed set:
 {chart_types}
 
-Layout is not a chart type. Use is_multi_panel, panel_count, and panel_layout for layout.
+Layout is not a chart type. Use is_multi_panel, panel_count, and panel_layout for layout. Set is_multi_panel=true only when the visible current image itself contains multiple chart panels. If the caption mentions multiple panels but the current image shows one chart panel, set is_multi_panel=false and panel_count=1.
 
 Return strict JSON only:
 {{

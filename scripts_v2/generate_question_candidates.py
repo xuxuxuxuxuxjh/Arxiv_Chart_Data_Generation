@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -41,6 +42,8 @@ Global rules:
 - Avoid generic "what is shown/plotted" questions.
 - Include enough visual anchors so the answer can be verified from the image.
 - Do not include the answer.
+- The current image may be a single extracted panel from a larger paper figure. Do not ask about panels, subfigures, datasets, or categories that are mentioned in the caption but are not visible in the current image.
+- Only use phrases such as "across the panels", "four panels", "top-left", "bottom-right", or "(a)/(b)" if the current visible image itself contains those panels.
 
 Return strict JSON only:
 {{
@@ -113,6 +116,21 @@ def validate_question(result: dict[str, Any], task_type: str) -> dict[str, Any]:
     return result
 
 
+def question_conflicts_with_visible_layout(result: dict[str, Any], record: dict[str, Any]) -> bool:
+    question = str(result.get("question") or "")
+    classifier = record.get("classifier") or {}
+    is_multi_panel = bool(classifier.get("is_multi_panel"))
+    panel_count = int(classifier.get("panel_count") or (2 if is_multi_panel else 1))
+    multi_panel_terms = re.search(
+        r"\b(four|three|two|multiple)\s+panels\b|\bacross\s+(all\s+)?(the\s+)?panels\b|"
+        r"\btop[- ]left\b|\btop[- ]right\b|\bbottom[- ]left\b|\bbottom[- ]right\b|"
+        r"\bpanel\s+\(?[a-z]\)?\b",
+        question,
+        re.I,
+    )
+    return bool(multi_panel_terms) and (not is_multi_panel or panel_count <= 1)
+
+
 def generate_one(record: dict[str, Any], task_type: str, args: argparse.Namespace) -> dict[str, Any]:
     cid = record["candidate_id"]
     if args.dry_run:
@@ -159,6 +177,8 @@ def generate_one(record: dict[str, Any], task_type: str, args: argparse.Namespac
                     retries=1,
                 )
                 result = validate_question(extract_json_object(raw), task_type)
+                if question_conflicts_with_visible_layout(result, record):
+                    raise ValueError(f"layout_conflict_question:{result.get('question')}")
                 break
             except Exception as exc:
                 last_exc = exc
@@ -170,6 +190,8 @@ def generate_one(record: dict[str, Any], task_type: str, args: argparse.Namespac
             raise last_exc
 
     result = validate_question(result, task_type)
+    if question_conflicts_with_visible_layout(result, record):
+        raise ValueError(f"layout_conflict_question:{result.get('question')}")
     return {
         "id": stable_id("qv2", f"{cid}:{task_type}:{result['question']}"),
         "candidate_id": cid,

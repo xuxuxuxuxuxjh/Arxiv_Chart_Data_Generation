@@ -1,5 +1,6 @@
 # Runtime and large data outputs
 work
+work_local/
 review_export/assets/
 review_export/*.html
 *.jsonl
