@@ -947,8 +947,8 @@ Do not ask generic "what is shown/plotted" questions.
 
 ### 1. 固定 Chart Type 集合
 
-- [ ] 在 classifier prompt 中定义闭集 `chart_types`，要求模型只能从集合中选择，不能自由发挥。
-- [ ] 把 layout 信息和 chart type 分开：`is_multi_panel`、`panel_count`、`panel_layout` 不作为 chart type。
+- [x] 在 classifier prompt 中定义闭集 `chart_types`，要求模型只能从集合中选择，不能自由发挥。
+- [x] 把 layout 信息和 chart type 分开：`is_multi_panel`、`panel_count`、`panel_layout` 不作为 chart type。
 - [ ] 建议 chart type 集合：
 
 ```text
@@ -973,8 +973,8 @@ matrix_plot
 other_chart
 ```
 
-- [ ] 修改 `scripts/classify_chart_candidates.py` 的 prompt 和 JSON schema。
-- [ ] classifier 输出中保留：
+- [x] 在 `scripts_v2/classify_charts_v2.py` 中重写 classifier prompt 和 JSON schema。
+- [x] classifier 输出中保留：
 
 ```json
 {
@@ -991,13 +991,13 @@ other_chart
 
 ### 2. 取消 Sampling 限制
 
-- [ ] 第二版先不做 sampling quota。
-- [ ] 后续处理输入改成全部通过 filter + classifier + dedup 的 2020-2025 chart 图片。
-- [ ] 不限制每篇 paper 的图片上限。
-- [ ] 不限制月份上限。
-- [ ] 不限制年份配比，只要求年份在 2020-2025。
-- [ ] 保留 `is_charxiv_paper` 标记，但不再优先纳入或排除。
-- [ ] 可以新增统一输入：
+- [x] 第二版先不做 sampling quota。
+- [x] 后续处理输入改成全部通过 filter + classifier + dedup 的 2020-2025 chart 图片。
+- [x] 不限制每篇 paper 的图片上限。
+- [x] 不限制月份上限。
+- [x] 不限制年份配比，只要求年份在 2020-2025。
+- [x] 保留 `is_charxiv_paper` 标记，但不再优先纳入或排除。
+- [x] 新增统一输入：
 
 ```text
 work/candidates_2020_2025.deduped.jsonl
@@ -1006,17 +1006,17 @@ work/candidates_2020_2025.deduped.jsonl
 或显式导出：
 
 ```text
-work/edition2/filtered_charts_2020_2025.jsonl
+work/edit2/filtered_charts_2020_2025.jsonl
 ```
 
 ### 3. 重新定义 Question Task Type
 
-- [ ] 去掉 edition1 的 `descriptive_extraction`。
-- [ ] 单纯 title / axis label / legend OCR 题不再作为独立任务。
-- [ ] 参考 CharXiv Reasoning、ChartQAPro Reasoning、Hypothetical，定义更细的 task type。
-- [ ] 生成阶段不要先按比例抽 task；每张图都尝试生成每个 task type 的 question，形成 question candidate pool。
-- [ ] 比例只在全部生成、answer verify、thinking verify 后的最终筛选/采样阶段生效。
-- [ ] 建议最终采样目标比例：
+- [x] 去掉 edition1 的 `descriptive_extraction`。
+- [x] 单纯 title / axis label / legend OCR 题不再作为独立任务。
+- [x] 参考 CharXiv Reasoning、ChartQAPro Reasoning、Hypothetical，定义更细的 task type。
+- [x] 生成阶段不要先按比例抽 task；每张图都尝试生成每个 task type 的 question，形成 question candidate pool。
+- [x] 比例只在全部生成、answer verify、thinking verify 后的最终筛选/采样阶段生效。
+- [x] 建议最终采样目标比例：
 
 ```text
 cross_element_comparison        18%
@@ -1057,7 +1057,7 @@ hypothetical_reasoning:
   在给定假设下做推断或估计，例如 if threshold changes / if x increases / if one method is removed。
 ```
 
-- [ ] 定义 `answer_type` 闭集，不能全部默认 `short_text`：
+- [x] 定义 `answer_type` 闭集，不能全部默认 `short_text`：
 
 ```text
 numeric_exact
@@ -1072,10 +1072,10 @@ short_phrase
 
 ### 4. 重写 Question Generation Prompt
 
-- [ ] 修改 `scripts/generate_questions.py`，或新增 `scripts/generate_qa_gemini.py`。
-- [ ] 对每张 chart image 遍历全部 task type，每个 task type 尝试生成 1 条 question candidate。
-- [ ] 失败、低价值、不可解析 question 不进入 candidate pool，可按 task type retry。
-- [ ] prompt 必须强制：
+- [x] 新增 `scripts_v2/generate_question_candidates.py`。
+- [x] 对每张 chart image 遍历全部 task type，每个 task type 尝试生成 1 条 question candidate。
+- [x] 失败、低价值、不可解析 question 不进入 candidate pool，可按 task type retry。
+- [x] prompt 必须强制：
 
 ```text
 Question must require reasoning over visible chart content.
@@ -1085,7 +1085,7 @@ Prefer medium/hard questions.
 The answer must be verifiable from the image alone.
 ```
 
-- [ ] 输出 strict JSON，建议 schema：
+- [x] 输出 strict JSON，建议 schema：
 
 ```json
 {
@@ -1101,19 +1101,19 @@ The answer must be verifiable from the image alone.
 }
 ```
 
-- [ ] 增加 rule-based reject：如果 question 命中 title-only / axis-only / legend-only 模板，直接 retry。
-- [ ] 输出文件应是候选池，例如：
+- [x] 增加 rule-based reject：如果 question 命中 title-only / axis-only / legend-only 模板，直接 retry。
+- [x] 输出文件应是候选池，例如：
 
 ```text
 work/edit2/question_candidates.jsonl
 ```
 
-- [ ] 每条候选包含 `candidate_id + task_type`，后续按 verify 结果和目标比例再采样。
+- [x] 每条候选包含 `candidate_id + task_type`，后续按 verify 结果和目标比例再采样。
 
 ### 5. Gemini 生成 Answer：先 Think 后 Answer
 
-- [ ] 修改 `scripts/answer_questions_gemini.py`，或合并到新的 `generate_qa_gemini.py`。
-- [ ] answer prompt 改成要求 Gemini 先推理再给最终答案。
+- [x] 新增 `scripts_v2/generate_and_verify_answers.py`。
+- [x] answer prompt 改成要求 Gemini 先推理再给最终答案。
 - [ ] 推荐输出格式：
 
 ```text
@@ -1134,18 +1134,18 @@ Final answer: ...
 }
 ```
 
-- [ ] 保留 Gemini answer thinking，后续 judger 可参考，但最终训练时是否保留另行决定。
+- [x] 保留 Gemini answer thinking，后续 judger 可参考，但最终训练时是否保留另行决定。
 
 ### 6. 写 Answer Extractor 和 Retry
 
-- [ ] 新增通用 extractor，例如：
+- [x] 新增通用 extractor，例如：
 
 ```text
 extract_thinking_and_final_answer(text)
 extract_json_with_final_answer(text)
 ```
 
-- [ ] 支持解析：
+- [x] 支持解析：
 
 ```text
 <think>...</think>
@@ -1158,20 +1158,20 @@ Final answer: ...
 {"thinking": "...", "final_answer": "..."}
 ```
 
-- [ ] extractor 失败时自动 retry。
-- [ ] retry 后仍失败，写入：
+- [x] extractor 失败时自动 retry。
+- [x] retry 后仍失败，写入：
 
 ```text
 work/logs/answer_extraction_failures.jsonl
 ```
 
-- [ ] 不允许 extractor 失败的样本进入 verified QA。
+- [x] 不允许 extractor 失败的样本进入 verified QA。
 
 ### 7. Answer Verify 改成 Gemini Judger
 
-- [ ] 不再用三次 exact consensus 作为主 verify。
-- [ ] 新增 Gemini judger，对 image + question + candidate answer 做判断。
-- [ ] judger prompt 输入：
+- [x] 不再用三次 exact consensus 作为主 verify。
+- [x] 新增 Gemini judger，对 image + question + candidate answer 做判断。
+- [x] judger prompt 输入：
 
 ```text
 image
@@ -1182,7 +1182,7 @@ candidate thinking
 candidate final answer
 ```
 
-- [ ] judger 输出 strict JSON：
+- [x] judger 输出 strict JSON：
 
 ```json
 {
@@ -1195,7 +1195,7 @@ candidate final answer
 }
 ```
 
-- [ ] 通过条件：
+- [x] 通过条件：
 
 ```text
 verdict == correct
@@ -1203,24 +1203,24 @@ is_answerable_from_image == true
 answer_matches_image == true
 ```
 
-- [ ] 如果 judger 判错：
+- [x] 如果 judger 判错：
   - 第一次：retry answer generation。
   - 第二次：retry judger。
   - 仍失败：写入 `work/logs/answer_judge_failures.jsonl`，不进入 verified QA。
 
 ### 8. Kimi Thinking Generation
 
-- [ ] 以 `scripts/repair_kimi_pilot_outputs.py` 的实现为基础，抽成正式 thinking generation。
-- [ ] 使用 `/v1/messages`。
-- [ ] 使用 `kimi-k2.6-aliyun`。
-- [ ] `max_tokens=8192`。
-- [ ] 所有图片送 Kimi 前 resize 到：
+- [x] 以 `scripts/repair_kimi_pilot_outputs.py` 的实现为基础，抽成正式 thinking generation。
+- [x] 使用 `/v1/messages`。
+- [x] 使用 `kimi-k2.6-aliyun`。
+- [x] `max_tokens=8192`。
+- [x] 所有图片送 Kimi 前 resize 到：
 
 ```text
 H * W <= 100000
 ```
 
-- [ ] 默认并发：
+- [x] 默认并发：
 
 ```text
 workers=8
@@ -1229,8 +1229,8 @@ timeout=120
 retries=1
 ```
 
-- [ ] thinking prompt 输入 verified answer，而不是未验证 answer。
-- [ ] prompt 要求：
+- [x] thinking prompt 输入 verified answer，而不是未验证 answer。
+- [x] prompt 要求：
 
 ```text
 Reason only from visible chart evidence.
@@ -1239,12 +1239,12 @@ End with exactly:
 Final answer: {verified_answer}
 ```
 
-- [ ] 失败样本不能 fallback 成 answer-only messages；必须保留失败标记并进入 retry log。
+- [x] 失败样本不能 fallback 成 answer-only messages；必须保留失败标记并进入 retry log。
 
 ### 9. Verify Kimi Thinking：Gemini Check
 
-- [ ] 新增 Gemini thinking judger。
-- [ ] 输入：
+- [x] 新增 Gemini thinking judger。
+- [x] 输入：
 
 ```text
 image
@@ -1254,14 +1254,14 @@ Kimi thinking response
 Kimi final answer
 ```
 
-- [ ] 检查两件事：
+- [x] 检查两件事：
 
 ```text
 1. Kimi final answer 是否和 verified answer 一致。
 2. Kimi thinking 是否 grounded in image，是否支持该 answer。
 ```
 
-- [ ] judger 输出 strict JSON：
+- [x] judger 输出 strict JSON：
 
 ```json
 {
@@ -1273,7 +1273,7 @@ Kimi final answer
 }
 ```
 
-- [ ] 通过条件：
+- [x] 通过条件：
 
 ```text
 verdict == pass
@@ -1282,7 +1282,7 @@ reasoning_grounded == true
 has_contradiction == false
 ```
 
-- [ ] 不通过则 retry Kimi thinking；仍不通过则写入：
+- [x] 不通过则 retry Kimi thinking；仍不通过则写入：
 
 ```text
 work/logs/kimi_thinking_judge_failures.jsonl
@@ -1290,11 +1290,11 @@ work/logs/kimi_thinking_judge_failures.jsonl
 
 ### 10. Caption Generation 与 Verify
 
-- [ ] caption 继续使用 Kimi `/v1/messages`。
-- [ ] 同样 resize 到 `H*W<=100000`。
-- [ ] `max_tokens=8192`。
-- [ ] caption prompt 保持 image-only，不允许编造论文背景。
-- [ ] caption 输出 strict JSON：
+- [x] caption 继续使用 Kimi `/v1/messages`。
+- [x] 同样 resize 到 `H*W<=100000`。
+- [x] `max_tokens=8192`。
+- [x] caption prompt 保持 image-only，不允许编造论文背景。
+- [x] caption 输出 strict JSON：
 
 ```json
 {
@@ -1309,7 +1309,7 @@ work/logs/kimi_thinking_judge_failures.jsonl
 }
 ```
 
-- [ ] 新增 Gemini caption judger，检查：
+- [x] 新增 Gemini caption judger，检查：
 
 ```text
 caption 是否 grounded in image
@@ -1318,7 +1318,7 @@ caption 是否 grounded in image
 是否把不可读文本说成确定文本
 ```
 
-- [ ] 不通过则 retry caption；仍不通过写入：
+- [x] 不通过则 retry caption；仍不通过写入：
 
 ```text
 work/logs/caption_judge_failures.jsonl
@@ -1326,7 +1326,7 @@ work/logs/caption_judge_failures.jsonl
 
 ### 11. 输出文件建议
 
-- [ ] 第二版输出放到独立目录，避免覆盖 edition1：
+- [x] 第二版输出放到独立目录，避免覆盖 edition1：
 
 ```text
 work/edit2/
@@ -1343,7 +1343,7 @@ work/edit2/
   logs/
 ```
 
-- [ ] merged 文件只收 verified 样本：
+- [x] merged 文件只收 verified 样本：
 
 ```text
 answer_judged == true
@@ -1351,20 +1351,20 @@ thinking_judged == true
 caption_judged == true
 ```
 
-- [ ] 原始失败样本全部保留在 logs，不伪装成成功 messages。
+- [x] 原始失败样本全部保留在 logs，不伪装成成功 messages。
 
 ### 12. 最小实现顺序
 
-- [ ] 改 classifier chart type enum。
-- [ ] 导出全部 filtered/deduped 2020-2025 chart 输入，不做 sampling。
-- [ ] 改 question task type 和 prompt，每图尝试全部 task type，生成 question candidate pool。
-- [ ] 改 Gemini answer 生成格式：think + final answer。
-- [ ] 写 answer extractor + retry。
-- [ ] 写 Gemini answer judger。
-- [ ] 改 Kimi thinking generation：messages endpoint + resize + 8192 tokens + 并发。
-- [ ] 写 Gemini thinking judger。
-- [ ] 改 caption generation 使用同样 resize/Kimi 配置。
-- [ ] 写 Gemini caption judger。
+- [x] 改 classifier chart type enum。
+- [x] 导出全部 filtered/deduped 2020-2025 chart 输入，不做 sampling。
+- [x] 改 question task type 和 prompt，每图尝试全部 task type，生成 question candidate pool。
+- [x] 改 Gemini answer 生成格式：think + final answer。
+- [x] 写 answer extractor + retry。
+- [x] 写 Gemini answer judger。
+- [x] 改 Kimi thinking generation：messages endpoint + resize + 8192 tokens + 并发。
+- [x] 写 Gemini thinking judger。
+- [x] 改 caption generation 使用同样 resize/Kimi 配置。
+- [x] 写 Gemini caption judger。
 - [ ] 在 verified QA/thinking pool 上按 task_type 目标比例做最终采样。
-- [ ] 写 edit2 merge。
-- [ ] 生成 review HTML，只展示 verified 样本。
+- [x] 写 edit2 merge。
+- [x] 生成 review HTML，只展示 verified 样本。

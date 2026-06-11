@@ -80,6 +80,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-out", type=Path, default=EDIT2_ROOT / "answers_raw.jsonl")
     parser.add_argument("--verified-out", type=Path, default=EDIT2_ROOT / "answers_verified.jsonl")
     parser.add_argument("--failures", type=Path, default=EDIT2_ROOT / "logs" / "answer_failures.jsonl")
+    parser.add_argument(
+        "--extraction-failures",
+        type=Path,
+        default=EDIT2_ROOT / "logs" / "answer_extraction_failures.jsonl",
+    )
     parser.add_argument("--judge-failures", type=Path, default=EDIT2_ROOT / "logs" / "answer_judge_failures.jsonl")
     parser.add_argument("--report", type=Path, default=EDIT2_ROOT / "reports" / "answers_verified.json")
     parser.add_argument("--limit", type=int, default=0)
@@ -272,7 +277,14 @@ def main() -> int:
                     raw_record, verified = future.result()
                 except Exception as exc:
                     failures += 1
-                    append_jsonl(args.failures, [{"id": record.get("id"), "candidate_id": record.get("candidate_id"), "error": repr(exc)}])
+                    failure_record = {
+                        "id": record.get("id"),
+                        "candidate_id": record.get("candidate_id"),
+                        "error": repr(exc),
+                    }
+                    append_jsonl(args.failures, [failure_record])
+                    if "final answer" in repr(exc).lower() or "empty model response" in repr(exc).lower():
+                        append_jsonl(args.extraction_failures, [failure_record])
                     continue
                 append_jsonl(args.raw_out, [raw_record])
                 raw_count += 1

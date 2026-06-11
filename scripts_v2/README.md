@@ -50,6 +50,7 @@ Generate Gemini answers and verify them:
 ```bash
 python3 scripts_v2/generate_and_verify_answers.py \
   --input work/edit2/question_candidates.jsonl \
+  --extraction-failures work/edit2/logs/answer_extraction_failures.jsonl \
   --workers 8 \
   --batch-size 16 \
   --retry-failed
