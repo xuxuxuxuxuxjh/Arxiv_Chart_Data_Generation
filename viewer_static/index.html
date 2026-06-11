@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>arXiv Figure Viewer</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">arXiv Figure Viewer</div>
+      <input id="paperPath" class="path-input" spellcheck="false">
+      <button id="loadBtn" class="primary-btn">Load</button>
+      <div id="status" class="status"></div>
+    </header>
+
+    <main class="app-shell">
+      <section class="paper-pane">
+        <div class="pane-toolbar">
+          <div>
+            <div id="paperTitle" class="pane-title">Paper</div>
+            <div id="paperMeta" class="pane-meta"></div>
+          </div>
+          <div class="view-tabs" id="viewTabs">
+            <button class="tab-btn active" data-view="paper">Paper</button>
+            <button class="tab-btn" data-view="pdf">PDF</button>
+            <button class="tab-btn" data-view="source">Source</button>
+          </div>
+        </div>
+        <div id="paperScroller" class="paper-scroller">
+          <div id="paperPages" class="pages"></div>
+          <iframe id="pdfFrame" class="pdf-frame" title="PDF preview"></iframe>
+          <pre id="sourceView" class="source-view"></pre>
+        </div>
+      </section>
+
+      <aside class="figure-pane">
+        <div class="figure-toolbar">
+          <button id="prevBtn" class="icon-btn" title="Previous figure" aria-label="Previous figure">‹</button>
+          <div>
+            <div id="figureCounter" class="figure-counter">0 / 0</div>
+            <div id="figureName" class="figure-name"></div>
+          </div>
+          <button id="nextBtn" class="icon-btn" title="Next figure" aria-label="Next figure">›</button>
+        </div>
+
+        <div class="image-stage">
+          <img id="figureImage" alt="">
+        </div>
+
+        <div class="detail-scroll">
+          <section class="detail-section">
+            <div class="section-title">caption_latex</div>
+            <pre id="captionLatex" class="latex-block"></pre>
+          </section>
+
+          <section class="detail-section">
+            <div class="section-title">reference_paragraphs_latex</div>
+            <div id="references" class="references"></div>
+          </section>
+
+          <section class="detail-section">
+            <div class="section-title">metadata</div>
+            <dl id="metadata" class="metadata"></dl>
+          </section>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

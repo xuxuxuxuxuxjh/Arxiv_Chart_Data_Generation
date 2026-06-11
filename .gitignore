@@ -1,0 +1,38 @@
+# Runtime and large data outputs
+work
+review_export/assets/
+review_export/*.html
+*.jsonl
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.tif
+*.tiff
+*.bmp
+
+# Large local manifests / generated files
+merged_files_path.json
+pilot_review.html
+charxiv_inclusive_50k.consensus.jsonl
+charxiv_inclusive_50k.qa_caption.jsonl
+arxiv_fig_extract_stats.json
+img_merged/
+arXiv_src_*.tar/
+
+# Python / local cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.viewer_cache/
+
+# Local environment
+.env
+.venv/
+venv/
