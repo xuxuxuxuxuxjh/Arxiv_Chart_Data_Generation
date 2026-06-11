@@ -91,6 +91,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--judge-image-max-pixels", type=int, default=350000)
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry records that only exist in raw/judge-failure outputs; verified records are still skipped.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -243,7 +248,9 @@ def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tupl
             if judged.get("caption_verified"):
                 return raw, judged
             raw["caption_judge_error"] = f"caption_judge_failed:{judged.get('caption_judge')}"
-            return raw, None
+            if attempt >= args.retries:
+                return raw, None
+            last = RuntimeError(raw["caption_judge_error"])
         except Exception as exc:
             last = exc
             if attempt >= args.retries:
@@ -255,7 +262,9 @@ def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tupl
 
 def main() -> int:
     args = parse_args()
-    done = done_ids(args.raw_out) | done_ids(args.verified_out)
+    done = done_ids(args.verified_out)
+    if not args.retry_failed:
+        done |= done_ids(args.raw_out)
     records = [record for record in iter_jsonl(args.input) if source_id(record) not in done]
     if args.limit:
         records = records[: args.limit]
@@ -295,6 +304,7 @@ def main() -> int:
             "new_raw": raw_count,
             "new_verified": verified_count,
             "new_failures": failures,
+            "retry_failed": args.retry_failed,
             "dry_run": args.dry_run,
         },
     )

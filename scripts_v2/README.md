@@ -38,17 +38,21 @@ Generate one question candidate for every task type on every chart:
 ```bash
 python3 scripts_v2/generate_question_candidates.py \
   --input work/edit2/filtered_charts_2020_2025.jsonl \
-  --workers 4 \
-  --batch-size 16
+  --workers 8 \
+  --batch-size 16 \
+  --group-tasks-per-image
 ```
+
+`--group-tasks-per-image` keeps the same output contract, but uses one model call per image to request all missing task types. The script is resumable: existing `(candidate_id, task_type)` pairs in `question_candidates.jsonl` are skipped.
 
 Generate Gemini answers and verify them:
 
 ```bash
 python3 scripts_v2/generate_and_verify_answers.py \
   --input work/edit2/question_candidates.jsonl \
-  --workers 4 \
-  --batch-size 16
+  --workers 8 \
+  --batch-size 16 \
+  --retry-failed
 ```
 
 Generate Kimi thinking and verify it:
@@ -59,7 +63,8 @@ python3 scripts_v2/generate_and_verify_thinking.py \
   --workers 8 \
   --batch-size 8 \
   --image-max-pixels 100000 \
-  --max-tokens 8192
+  --max-tokens 8192 \
+  --retry-failed
 ```
 
 Generate captions and verify them:
@@ -70,7 +75,8 @@ python3 scripts_v2/generate_and_verify_captions.py \
   --workers 8 \
   --batch-size 8 \
   --image-max-pixels 100000 \
-  --max-tokens 8192
+  --max-tokens 8192 \
+  --retry-failed
 ```
 
 Sample verified QA/thinking after all task candidates are generated:

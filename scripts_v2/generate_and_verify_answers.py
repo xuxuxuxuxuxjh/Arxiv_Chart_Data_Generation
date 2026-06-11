@@ -88,6 +88,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-max-pixels", type=int, default=350000)
     parser.add_argument("--answer-retries", type=int, default=1)
     parser.add_argument("--judge-retries", type=int, default=1)
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry records that only exist in raw/judge-failure outputs; verified records are still skipped.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -248,7 +253,9 @@ def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tupl
 
 def main() -> int:
     args = parse_args()
-    done = done_ids(args.verified_out) | done_ids(args.raw_out)
+    done = done_ids(args.verified_out)
+    if not args.retry_failed:
+        done |= done_ids(args.raw_out)
     records = [record for record in iter_jsonl(args.input) if record["id"] not in done]
     if args.limit:
         records = records[: args.limit]
@@ -288,6 +295,7 @@ def main() -> int:
             "new_raw": raw_count,
             "new_verified": verified_count,
             "new_failures": failures,
+            "retry_failed": args.retry_failed,
             "dry_run": args.dry_run,
         },
     )
