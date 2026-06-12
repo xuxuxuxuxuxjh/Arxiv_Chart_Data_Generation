@@ -949,7 +949,7 @@ Do not ask generic "what is shown/plotted" questions.
 
 - [x] 在 classifier prompt 中定义闭集 `chart_types`，要求模型只能从集合中选择，不能自由发挥。
 - [x] 把 layout 信息和 chart type 分开：`is_multi_panel`、`panel_count`、`panel_layout` 不作为 chart type。
-- [ ] 建议 chart type 集合：
+- [x] 建议 chart type 集合：
 
 ```text
 line_chart
@@ -1114,7 +1114,7 @@ work/edit2/question_candidates.jsonl
 
 - [x] 新增 `scripts_v2/generate_and_verify_answers.py`。
 - [x] answer prompt 改成要求 Gemini 先推理再给最终答案。
-- [ ] 推荐输出格式：
+- [x] 推荐输出格式：
 
 ```text
 <think>
@@ -1123,7 +1123,7 @@ Use only visible chart evidence. Locate the relevant panels/series/axes, then re
 Final answer: ...
 ```
 
-- [ ] 如果采用 JSON 输出，推荐：
+- [x] 未采用 JSON 作为主输出；正式实现采用上面的 think/final 格式，extractor 同时兼容 JSON：
 
 ```json
 {
@@ -1365,6 +1365,6 @@ caption_judged == true
 - [x] 写 Gemini thinking judger。
 - [x] 改 caption generation 使用同样 resize/Kimi 配置。
 - [x] 写 Gemini caption judger。
-- [ ] 在 verified QA/thinking pool 上按 task_type 目标比例做最终采样。
+- [x] 在 verified QA/thinking pool 上按 task_type 目标比例做最终采样。
 - [x] 写 edit2 merge。
 - [x] 生成 review HTML，只展示 verified 样本。
