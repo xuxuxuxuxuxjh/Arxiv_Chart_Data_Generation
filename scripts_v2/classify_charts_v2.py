@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import random
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=50)
+    parser.add_argument(
+        "--max-pending",
+        type=int,
+        default=0,
+        help="Maximum queued/running futures. Defaults to max(workers, batch_size).",
+    )
+    parser.add_argument("--status-every", type=int, default=100, help="Print progress every N completed records.")
+    parser.add_argument("--report-every", type=int, default=1000, help="Rewrite running report every N completed records.")
     parser.add_argument("--image-max-pixels", type=int, default=350000)
+    parser.add_argument("--shard-index", type=int, default=0, help="0-based shard index.")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total shard count.")
+    parser.add_argument(
+        "--extra-done",
+        type=Path,
+        action="append",
+        default=[],
+        help="Additional classified JSONL outputs whose candidate_ids should be skipped.",
+    )
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -78,6 +96,13 @@ def already_done(path: Path) -> set[str]:
     if not path.exists():
         return set()
     return {record["candidate_id"] for record in iter_jsonl(path)}
+
+
+def candidate_in_shard(candidate_id: str, shard_index: int, num_shards: int) -> bool:
+    if num_shards <= 1:
+        return True
+    digest = hashlib.sha1(candidate_id.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:12], 16) % num_shards == shard_index
 
 
 def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -169,36 +194,127 @@ def classify_one(record: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 def main() -> int:
     args = parse_args()
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard_index < num_shards")
     done = already_done(args.out)
-    records = [record for record in iter_jsonl(args.input) if record["candidate_id"] not in done]
+    for path in args.extra_done:
+        done |= already_done(path)
+    def wanted(record: dict[str, Any]) -> bool:
+        candidate_id = str(record["candidate_id"])
+        return candidate_id not in done and candidate_in_shard(candidate_id, args.shard_index, args.num_shards)
+
     if args.shuffle:
+        records = [record for record in iter_jsonl(args.input) if wanted(record)]
         random.seed(20260611)
         random.shuffle(records)
-    if args.limit:
-        records = records[: args.limit]
-    print(f"classifying {len(records)} records, already done {len(done)}", flush=True)
+        if args.limit:
+            records = records[: args.limit]
+        records_iter = iter(records)
+        total = len(records)
+    else:
+        records_iter = (record for record in iter_jsonl(args.input) if wanted(record))
+        total = args.limit if args.limit else 0
+    max_pending = args.max_pending or max(args.workers, args.batch_size)
+    print(f"classifying records, already done {len(done)}", flush=True)
 
     success = 0
     failures = 0
-    for start in range(0, len(records), args.batch_size):
-        batch = records[start : start + args.batch_size]
-        batch_start = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {executor.submit(classify_one, record, args): record for record in batch}
-            for future in as_completed(futures):
-                record = futures[future]
+    accepted = 0
+    weak_accept = 0
+    chart_types: Counter[str] = Counter()
+    started = completed = 0
+    exhausted = False
+    overall_start = last_status = time.perf_counter()
+
+    def write_running_report() -> None:
+        elapsed = time.perf_counter() - overall_start
+        write_json(
+            args.report,
+            {
+                "input": str(args.input),
+                "out": str(args.out),
+                "shard_index": args.shard_index,
+                "num_shards": args.num_shards,
+                "already_done": len(done),
+                "new_started": started,
+                "new_completed": completed,
+                "new_success": success,
+                "new_failures": failures,
+                "new_accepted": accepted,
+                "new_weak_accept": weak_accept,
+                "new_chart_types": dict(chart_types.most_common()),
+                "elapsed_seconds": elapsed,
+                "rate_per_second": completed / elapsed if elapsed > 0 else 0,
+                "model": GEMINI_MODEL,
+                "dry_run": args.dry_run,
+                "complete": exhausted and completed == started,
+            },
+        )
+
+    def next_record() -> dict[str, Any] | None:
+        nonlocal started, exhausted
+        if args.limit and started >= args.limit:
+            exhausted = True
+            return None
+        try:
+            record = next(records_iter)
+        except StopIteration:
+            exhausted = True
+            return None
+        started += 1
+        return record
+
+    def submit_more(executor: ThreadPoolExecutor, futures: dict[Any, dict[str, Any]]) -> None:
+        while not exhausted and len(futures) < max_pending:
+            record = next_record()
+            if record is None:
+                break
+            futures[executor.submit(classify_one, record, args)] = record
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures: dict[Any, dict[str, Any]] = {}
+        submit_more(executor, futures)
+        while futures:
+            done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done_futures:
+                record = futures.pop(future)
+                completed += 1
                 try:
                     out = future.result()
                 except Exception as exc:
                     failures += 1
                     append_jsonl(args.failures, [{"candidate_id": record.get("candidate_id"), "error": repr(exc)}])
-                    continue
-                append_jsonl(args.out, [out])
-                success += 1
-        print(
-            f"classified success={success} failures={failures} batch_elapsed={time.perf_counter() - batch_start:.1f}s",
-            flush=True,
-        )
+                else:
+                    append_jsonl(args.out, [out])
+                    success += 1
+                    classifier = out.get("classifier") or {}
+                    if classifier.get("accepted"):
+                        accepted += 1
+                    if classifier.get("weak_accept"):
+                        weak_accept += 1
+                    chart_types.update(classifier.get("chart_types") or [])
+            submit_more(executor, futures)
+            now = time.perf_counter()
+            should_status = (
+                completed == started and exhausted
+                or (args.status_every > 0 and completed % args.status_every == 0)
+                or now - last_status >= 30
+            )
+            if should_status:
+                elapsed = now - overall_start
+                expected = f"/{total}" if total else ""
+                print(
+                    f"classified success={success} accepted={accepted} weak={weak_accept} failures={failures} "
+                    f"done={completed}{expected} started={started} pending={len(futures)} "
+                    f"elapsed={elapsed:.1f}s rate={completed / elapsed if elapsed > 0 else 0:.3f}/s",
+                    flush=True,
+                )
+                last_status = now
+            if args.report_every > 0 and completed % args.report_every == 0:
+                write_running_report()
+    write_running_report()
 
     all_records = list(iter_jsonl(args.out)) if args.out.exists() else []
     accepted_count = sum(1 for r in all_records if (r.get("classifier") or {}).get("accepted"))
