@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from common_v2 import (
     EDIT2_ROOT,
     GEMINI_MODEL,
     KIMI_MESSAGES_MODEL,
+    KIMI_THINKING_BUDGET_TOKENS,
     append_jsonl,
     extract_final_answer,
     extract_json_object,
@@ -23,16 +25,16 @@ from common_v2 import (
 )
 
 
-THINKING_PROMPT = """Reason from visible chart evidence only.
+THINKING_PROMPT = """Use visible chart evidence only. Keep the reasoning concise.
 
-Use the verified answer as the required final answer. Do not use paper background, caption-only claims, or external knowledge. The reasoning should explicitly mention the visible chart evidence that supports the answer.
+The verified answer below is mandatory. Explain briefly which visible chart values, marks, panels, axes, legends, or trends support it. Do not use paper background, caption-only claims, or external knowledge.
 
 Question: {question}
 Task type: {task_type}
 Answer type: {answer_type}
 Verified answer: {answer}
 
-End with exactly:
+End with this exact final line:
 Final answer: {answer}
 """
 
@@ -76,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--image-max-pixels", type=int, default=100000)
+    parser.add_argument("--image-max-pixels", type=int, default=0, help="0 sends the original image without resizing.")
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--retries", type=int, default=1)
@@ -115,22 +117,34 @@ def generate_thinking(record: dict[str, Any], args: argparse.Namespace) -> dict[
             timeout=args.timeout,
             retries=args.retries,
         )
+    has_final_answer_marker = bool(re.search(r"final answer\s*:", response, re.I))
     final_answer = extract_final_answer(response)
+    final_answer_appended = False
+    if not has_final_answer_marker:
+        response = response.rstrip() + f"\n\nFinal answer: {record['answer']}"
+        final_answer = record["answer"]
+        final_answer_appended = True
     answer_type = record.get("answer_type", "short_phrase")
     final_matches = normalize_answer(final_answer, answer_type) == normalize_answer(record["answer"], answer_type)
     out = dict(record)
     out["kimi_thinking"] = {
         "model": KIMI_MESSAGES_MODEL,
-        "protocol": "anthropic_messages",
+        "protocol": "openai_chat_completions_streaming",
         "model_config": {
             "max_tokens": args.max_tokens,
             "image_max_pixels": args.image_max_pixels,
+            "temperature": 1,
+            "top_p": 0.95,
+            "top_k": -1,
+            "extra_kwargs": {"thinking": {"type": "enabled", "budget_tokens": KIMI_THINKING_BUDGET_TOKENS}},
+            "stream": True,
             "timeout": args.timeout,
             "retries": args.retries,
         },
         "response": response,
         "final_answer": final_answer,
         "final_answer_matches_verified_answer": final_matches,
+        "final_answer_appended": final_answer_appended,
         "dry_run": args.dry_run,
     }
     out["messages"] = {
@@ -242,31 +256,54 @@ def main() -> int:
         records = records[: args.limit]
     print(f"generating kimi thinking records={len(records)}", flush=True)
     raw_count = verified_count = failures = 0
-    for start in range(0, len(records), args.batch_size):
-        batch = records[start : start + args.batch_size]
-        batch_start = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {executor.submit(generate_and_judge, record, args): record for record in batch}
-            for future in as_completed(futures):
-                record = futures[future]
+    started = completed = 0
+    total = len(records)
+    max_pending = max(args.workers, args.batch_size)
+    overall_start = last_status = time.perf_counter()
+
+    def submit_next(executor: ThreadPoolExecutor, futures: dict[Any, dict[str, Any]]) -> None:
+        nonlocal started
+        while started < total and len(futures) < max_pending:
+            record = records[started]
+            futures[executor.submit(generate_and_judge, record, args)] = record
+            started += 1
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures: dict[Any, dict[str, Any]] = {}
+        submit_next(executor, futures)
+        while futures:
+            done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done_futures:
+                record = futures.pop(future)
+                completed += 1
                 try:
                     raw, verified = future.result()
                 except Exception as exc:
                     failures += 1
-                    append_jsonl(args.failures, [{"id": record.get("id"), "candidate_id": record.get("candidate_id"), "error": repr(exc)}])
-                    continue
-                append_jsonl(args.raw_out, [raw])
-                raw_count += 1
-                if verified:
-                    append_jsonl(args.verified_out, [verified])
-                    verified_count += 1
+                    append_jsonl(
+                        args.failures,
+                        [{"id": record.get("id"), "candidate_id": record.get("candidate_id"), "error": repr(exc)}],
+                    )
                 else:
-                    append_jsonl(args.judge_failures, [raw])
-        print(
-            f"kimi raw={raw_count} verified={verified_count} failures={failures} "
-            f"done={min(start + len(batch), len(records))}/{len(records)} elapsed={time.perf_counter() - batch_start:.1f}s",
-            flush=True,
-        )
+                    append_jsonl(args.raw_out, [raw])
+                    raw_count += 1
+                    if verified:
+                        append_jsonl(args.verified_out, [verified])
+                        verified_count += 1
+                    else:
+                        append_jsonl(args.judge_failures, [raw])
+            submit_next(executor, futures)
+            now = time.perf_counter()
+            if completed == total or completed % max(1, min(args.batch_size, 16)) == 0 or now - last_status >= 30:
+                elapsed = now - overall_start
+                rate = completed / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"kimi raw={raw_count} verified={verified_count} failures={failures} "
+                    f"done={completed}/{total} started={started} pending={len(futures)} "
+                    f"elapsed={elapsed:.1f}s rate={rate:.3f}/s",
+                    flush=True,
+                )
+                last_status = now
     write_json(
         args.report,
         {

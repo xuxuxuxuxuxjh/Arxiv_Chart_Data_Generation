@@ -61,12 +61,16 @@ Generate Kimi thinking and verify it:
 ```bash
 python3 scripts_v2/generate_and_verify_thinking.py \
   --input work/edit2/answers_verified.jsonl \
-  --workers 8 \
-  --batch-size 8 \
-  --image-max-pixels 100000 \
+  --workers 24 \
+  --batch-size 192 \
+  --image-max-pixels 0 \
   --max-tokens 8192 \
+  --timeout 300 \
   --retry-failed
 ```
+
+The default Kimi model is `kimi-k2.6-qianli` through `/v1/chat/completions`
+streaming. `--image-max-pixels 0` sends original images without resizing.
 
 Generate captions and verify them:
 

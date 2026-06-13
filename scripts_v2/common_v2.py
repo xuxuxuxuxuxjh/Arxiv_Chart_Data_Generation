@@ -32,8 +32,14 @@ GEMINI_ENDPOINT = (
     "https://models-proxy.stepfun-inc.com/gemini/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
-KIMI_MESSAGES_MODEL = os.environ.get("ARXIV_CHART_KIMI_MODEL", "kimi-k2.6-aliyun")
-KIMI_MESSAGES_ENDPOINT = "https://models-proxy.stepfun-inc.com/v1/messages"
+KIMI_MODEL = os.environ.get("ARXIV_CHART_KIMI_MODEL", "kimi-k2.6-qianli")
+KIMI_BASE_URL = os.environ.get("ARXIV_CHART_KIMI_BASE_URL", "https://models-proxy.stepfun-inc.com/v1")
+KIMI_ENDPOINT = f"{KIMI_BASE_URL}/chat/completions"
+KIMI_THINKING_BUDGET_TOKENS = int(os.environ.get("ARXIV_CHART_KIMI_THINKING_BUDGET_TOKENS", "2048"))
+# Backward-compatible names for the v2 scripts. The transport is now OpenAI-style
+# chat/completions with streaming reasoning, not Anthropic messages.
+KIMI_MESSAGES_MODEL = KIMI_MODEL
+KIMI_MESSAGES_ENDPOINT = KIMI_ENDPOINT
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -299,6 +305,171 @@ def gemini_generate(
         raise RuntimeError(f"Unexpected Gemini response: {data}") from exc
 
 
+def _model_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_model_text(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning_content", "reasoning", "output_text"):
+            if key in value:
+                text = _model_text(value.get(key))
+                if text:
+                    return text
+        return ""
+    return str(value)
+
+
+def _stream_chat_completion(
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    timeout: int,
+    retries: int,
+    retry_sleep: float = 2.0,
+) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            stream_payload = dict(payload)
+            stream_payload["stream"] = True
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            with requests.post(
+                KIMI_ENDPOINT,
+                headers=headers,
+                json=stream_payload,
+                timeout=timeout,
+                stream=True,
+            ) as response:
+                if response.status_code >= 400:
+                    message = response.text[:1000]
+                    if response.status_code in {408, 409, 424, 429, 500, 502, 503, 504}:
+                        raise RuntimeError(f"RETRYABLE HTTP {response.status_code}: {message}")
+                    raise RuntimeError(f"HTTP {response.status_code}: {message}")
+
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        piece = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in piece.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        content = _model_text(delta.get("content")) or _model_text(choice.get("text"))
+                        reasoning = (
+                            _model_text(delta.get("reasoning_content"))
+                            or _model_text(delta.get("reasoning"))
+                            or _model_text(choice.get("reasoning_content"))
+                            or _model_text(choice.get("reasoning"))
+                            or _model_text(choice.get("reasoning_details"))
+                        )
+                        if content:
+                            content_parts.append(content)
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
+
+            content = "".join(content_parts).strip()
+            reasoning = "".join(reasoning_parts).strip()
+            if reasoning:
+                return f"<think>\n{reasoning}\n</think>\n\n{content}".strip()
+            return content
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= retries:
+                break
+            text = repr(exc).lower()
+            wait = retry_sleep * (2**attempt) + random.random()
+            retry_after = re.search(r"try again after (\d+(?:\.\d+)?) seconds", text)
+            if retry_after:
+                wait = max(wait, float(retry_after.group(1)) + 1.0)
+            if "429" in text or "rate limit" in text:
+                wait = max(wait, 5.0 + attempt * 3.0 + random.random())
+            time.sleep(wait)
+    assert last_exc is not None
+    raise last_exc
+
+
+def kimi_generate(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int = 8192,
+    temperature: float = 1,
+    top_p: float = 0.95,
+    top_k: int = -1,
+    timeout: int = 300,
+    retries: int = 2,
+    extra_kwargs: dict[str, Any] | None = None,
+    stream: bool = True,
+) -> str:
+    payload = {
+        "model": KIMI_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+    }
+    if extra_kwargs:
+        payload.update(extra_kwargs)
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key()}"}
+    if stream:
+        return _stream_chat_completion(
+            payload,
+            headers,
+            timeout=timeout,
+            retries=retries,
+            retry_sleep=2,
+        )
+
+    data = request_with_retry(
+        "POST",
+        KIMI_ENDPOINT,
+        headers=headers,
+        json_payload=payload,
+        timeout=timeout,
+        retries=retries,
+    )
+    try:
+        choice = data["choices"][0]
+        message = choice.get("message") or {}
+        content = _model_text(message.get("content")) or _model_text(choice.get("text"))
+        reasoning = (
+            _model_text(message.get("reasoning_content"))
+            or _model_text(choice.get("reasoning_content"))
+            or _model_text(message.get("reasoning"))
+            or _model_text(choice.get("reasoning"))
+            or _model_text(message.get("reasoning_details"))
+            or _model_text(choice.get("reasoning_details"))
+        )
+        if reasoning:
+            return f"<think>\n{reasoning.strip()}\n</think>\n\n{content.strip()}".strip()
+        return content.strip()
+    except Exception as exc:
+        raise RuntimeError(f"Unexpected Kimi response: {data}") from exc
+
+
+def content_parts_openai(image_path: Path, text: str, *, cache_dir: Path, max_pixels: int) -> list[dict[str, Any]]:
+    resized = resized_image_path(image_path, cache_dir, max_pixels)
+    inline = image_part_inline(resized)["inlineData"]
+    return [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{inline['mimeType']};base64,{inline['data']}"},
+        },
+        {"type": "text", "text": text},
+    ]
+
+
 def kimi_messages_generate(
     *,
     image_path: Path,
@@ -309,43 +480,27 @@ def kimi_messages_generate(
     timeout: int = 120,
     retries: int = 1,
 ) -> str:
-    resized = resized_image_path(image_path, cache_dir, image_max_pixels)
-    inline = image_part_inline(resized)["inlineData"]
-    payload = {
-        "model": KIMI_MESSAGES_MODEL,
-        "max_tokens": max_tokens,
-        "messages": [
+    return kimi_generate(
+        [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": inline["mimeType"],
-                            "data": inline["data"],
-                        },
-                    },
-                    {"type": "text", "text": text},
-                ],
+                "content": content_parts_openai(
+                    image_path,
+                    text,
+                    cache_dir=cache_dir,
+                    max_pixels=image_max_pixels,
+                ),
             }
         ],
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key()}",
-        "anthropic-version": "2023-06-01",
-    }
-    data = request_with_retry(
-        "POST",
-        KIMI_MESSAGES_ENDPOINT,
-        headers=headers,
-        json_payload=payload,
+        max_tokens=max_tokens,
+        temperature=1,
+        top_p=0.95,
+        top_k=-1,
         timeout=timeout,
         retries=retries,
+        extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": KIMI_THINKING_BUDGET_TOKENS}},
+        stream=True,
     )
-    content = data.get("content") or []
-    return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
 
 
 def resized_image_path(src: Path, cache_dir: Path, max_pixels: int) -> Path:

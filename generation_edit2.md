@@ -1210,22 +1210,31 @@ answer_matches_image == true
 
 ### 8. Kimi Thinking Generation
 
-- [x] 以 `scripts/repair_kimi_pilot_outputs.py` 的实现为基础，抽成正式 thinking generation。
-- [x] 使用 `/v1/messages`。
-- [x] 使用 `kimi-k2.6-aliyun`。
+- [x] 以 `scripts/pipeline_common.py` 的 streaming chat/completions Kimi 调用为基础，抽成正式 thinking generation。
+- [x] 使用 `/v1/chat/completions`，开启 streaming，收集 `reasoning_content` 为 `<think>...</think>`。
+- [x] 使用 `kimi-k2.6-qianli`。
 - [x] `max_tokens=8192`。
-- [x] 所有图片送 Kimi 前 resize 到：
+- [x] thinking 阶段不 resize 图片，直接发送原图：
 
 ```text
-H * W <= 100000
+image_max_pixels = 0
+```
+
+- [x] Kimi thinking 参数：
+
+```text
+temperature=1
+top_p=0.95
+top_k=-1
+extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": 2048}}
 ```
 
 - [x] 默认并发：
 
 ```text
-workers=8
-batch_size=8
-timeout=120
+workers=24
+batch_size=192
+timeout=300
 retries=1
 ```
 
@@ -1361,7 +1370,7 @@ caption_judged == true
 - [x] 改 Gemini answer 生成格式：think + final answer。
 - [x] 写 answer extractor + retry。
 - [x] 写 Gemini answer judger。
-- [x] 改 Kimi thinking generation：messages endpoint + resize + 8192 tokens + 并发。
+- [x] 改 Kimi thinking generation：chat/completions streaming + qianli + 原图 + 8192 tokens + thinking budget + 并发。
 - [x] 写 Gemini thinking judger。
 - [x] 改 caption generation 使用同样 resize/Kimi 配置。
 - [x] 写 Gemini caption judger。
