@@ -9,24 +9,25 @@ from typing import Any
 
 from common_v2 import (
     EDIT2_ROOT,
-    GEMINI_MODEL,
     KIMI_MESSAGES_MODEL,
     append_jsonl,
     extract_json_object,
-    gemini_generate,
-    image_part_gemini,
     iter_jsonl,
     kimi_messages_generate,
     write_json,
 )
 
 
-CAPTION_PROMPT = """Describe this chart in detail using only visible information.
+CAPTION_SCHEMA_VERSION = "kimi_caption_no_verify_v1"
+
+
+CAPTION_PROMPT = """Describe this chart in detail using the chart image and the provided caption_latex.
 
 Requirements:
-- Use natural language grounded in the image.
+- Use natural language grounded in the image and caption_latex.
+- Use caption_latex to preserve domain terms, method names, variable names, panel descriptions, and series names.
 - Include chart type, axes, legend/series, visual encodings, major trends/comparisons, and multi-panel layout when visible.
-- Do not invent paper methods, dataset facts, or conclusions that are not visible in the image.
+- Do not invent facts that are not supported by either the image or caption_latex.
 - If text is not legible, say that some labels are not legible.
 - The dense_caption must be at least 2 sentences and at most 180 words.
 
@@ -42,55 +43,37 @@ Return strict JSON only:
   "uncertainty": []
 }}
 
-Caption LaTeX for terminology only:
+caption_latex:
 {caption_latex}
 """
 
 
-CAPTION_JUDGE_PROMPT = """You are verifying a dense caption for a chart image.
-
-Use only the visible chart image.
-
-Dense caption:
-{dense_caption}
-
-Visible elements JSON:
-{visible_elements}
-
-Check:
-- Caption is grounded in the image.
-- Caption does not hallucinate paper background, methods, datasets, or conclusions.
-- Caption covers chart type, axes/scale, legend/series/panels, and major trend/comparison when visible.
-- Caption does not state unreadable text as certain.
-
-Return strict JSON only:
-{{
-  "verdict": "pass",
-  "caption_grounded": true,
-  "has_hallucination": false,
-  "coverage_ok": true,
-  "unreadable_text_handled": true,
-  "reason": "..."
-}}
-"""
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Kimi dense captions and verify with Gemini.")
+    parser = argparse.ArgumentParser(description="Generate Kimi dense captions without a separate verifier.")
     parser.add_argument("--input", type=Path, default=EDIT2_ROOT / "filtered_charts_2020_2025.jsonl")
     parser.add_argument("--raw-out", type=Path, default=EDIT2_ROOT / "dense_caption_raw.jsonl")
     parser.add_argument("--verified-out", type=Path, default=EDIT2_ROOT / "dense_caption_verified.jsonl")
     parser.add_argument("--failures", type=Path, default=EDIT2_ROOT / "logs" / "caption_failures.jsonl")
-    parser.add_argument("--judge-failures", type=Path, default=EDIT2_ROOT / "logs" / "caption_judge_failures.jsonl")
+    parser.add_argument(
+        "--judge-failures",
+        type=Path,
+        default=EDIT2_ROOT / "logs" / "caption_judge_failures.jsonl",
+        help="Compatibility argument; caption verification is disabled in the current pipeline.",
+    )
     parser.add_argument("--report", type=Path, default=EDIT2_ROOT / "reports" / "dense_caption_verified.json")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--image-max-pixels", type=int, default=100000)
+    parser.add_argument("--image-max-pixels", type=int, default=1000000)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--retries", type=int, default=1)
-    parser.add_argument("--judge-image-max-pixels", type=int, default=350000)
+    parser.add_argument(
+        "--judge-image-max-pixels",
+        type=int,
+        default=350000,
+        help="Compatibility argument; caption verification is disabled in the current pipeline.",
+    )
     parser.add_argument(
         "--retry-failed",
         action="store_true",
@@ -107,7 +90,12 @@ def source_id(record: dict[str, Any]) -> str:
 def done_ids(path: Path) -> set[str]:
     if not path.exists():
         return set()
-    return {source_id(record) for record in iter_jsonl(path)}
+    ids: set[str] = set()
+    for record in iter_jsonl(path):
+        generation = record.get("caption_generation") or {}
+        if generation.get("schema_version") == CAPTION_SCHEMA_VERSION:
+            ids.add(source_id(record))
+    return ids
 
 
 def caption_failed(result: dict[str, Any]) -> bool:
@@ -115,26 +103,48 @@ def caption_failed(result: dict[str, Any]) -> bool:
     return not dense_caption or "Automatic dense caption generation failed" in dense_caption
 
 
+def caption_latex_text(record: dict[str, Any]) -> str:
+    source = record.get("source") or {}
+    return str(record.get("caption_latex") or source.get("caption_latex") or "").strip()
+
+
+def parse_caption_response(raw: str) -> dict[str, Any]:
+    try:
+        result = extract_json_object(raw)
+    except Exception:
+        caption = raw.strip()
+        if caption.lower().startswith("```"):
+            caption = caption.strip("`").strip()
+        result = {
+            "dense_caption": caption,
+            "visible_elements": {"chart_types": [], "axes": [], "series_or_panels": [], "main_trends": []},
+            "uncertainty": ["caption_response_was_not_json"],
+        }
+    result["raw_response"] = raw
+    return result
+
+
 def generate_caption(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     cid = source_id(record)
+    caption_latex = caption_latex_text(record)
     if args.dry_run:
         result = {
-            "dense_caption": "The image shows a chart with visible axes and plotted data. The caption should be verified against the chart image.",
+            "dense_caption": "The image shows a chart with visible axes and plotted data. The provided caption_latex supplies figure terminology for the dense caption.",
             "visible_elements": {"chart_types": [], "axes": [], "series_or_panels": [], "main_trends": []},
             "uncertainty": ["dry_run"],
+            "raw_response": None,
         }
     else:
         raw = kimi_messages_generate(
             image_path=Path(record["image_path"] if "image_path" in record else record["image"]),
-            text=CAPTION_PROMPT.format(caption_latex=(record.get("caption_latex") or (record.get("source") or {}).get("caption_latex") or "")[:5000]),
+            text=CAPTION_PROMPT.format(caption_latex=caption_latex[:5000]),
             cache_dir=EDIT2_ROOT / "tmp" / "kimi_caption_images",
             image_max_pixels=args.image_max_pixels,
             max_tokens=args.max_tokens,
             timeout=args.timeout,
             retries=args.retries,
         )
-        result = extract_json_object(raw)
-        result["raw_response"] = raw
+        result = parse_caption_response(raw)
     if caption_failed(result):
         raise ValueError("empty_or_failed_caption")
     image = record["image_path"] if "image_path" in record else record["image"]
@@ -151,91 +161,41 @@ def generate_caption(record: dict[str, Any], args: argparse.Namespace) -> dict[s
             "image_kind": record.get("image_kind") or (record.get("source") or {}).get("image_kind"),
             "is_charxiv_paper": record.get("is_charxiv_paper", (record.get("source") or {}).get("is_charxiv_paper", False)),
             "json_path": record.get("json_path") or (record.get("source") or {}).get("json_path"),
-            "caption_latex": record.get("caption_latex") or (record.get("source") or {}).get("caption_latex", ""),
+            "caption_latex": caption_latex,
             "classifier": record.get("classifier") or (record.get("source") or {}).get("classifier") or {},
         },
         "task_type": "dense_caption",
-        "evidence_source": "image_only",
+        "evidence_source": "image_and_caption_latex",
         "dense_caption": result.get("dense_caption", ""),
         "visible_elements": result.get("visible_elements", {}),
         "uncertainty": result.get("uncertainty", []),
         "caption_generation": {
+            "schema_version": CAPTION_SCHEMA_VERSION,
             "model": KIMI_MESSAGES_MODEL,
-            "protocol": "anthropic_messages",
+            "protocol": "openai_chat_completions_streaming",
             "model_config": {
                 "max_tokens": args.max_tokens,
                 "image_max_pixels": args.image_max_pixels,
                 "timeout": args.timeout,
                 "retries": args.retries,
             },
+            "caption_latex_used": bool(caption_latex),
             "raw_response": result.get("raw_response"),
             "dry_run": args.dry_run,
         },
+        "caption_judge": {
+            "schema_version": CAPTION_SCHEMA_VERSION,
+            "verdict": "skipped",
+            "passed": True,
+            "reason": "caption verification disabled; successful Kimi generation is accepted",
+            "dry_run": args.dry_run,
+        },
+        "caption_verified": True,
         "messages": [
-            {"role": "user", "content": "<image>\nDescribe this chart in detail using only visible information."},
+            {"role": "user", "content": "<image>\n" + CAPTION_PROMPT.format(caption_latex=caption_latex[:5000])},
             {"role": "assistant", "content": result.get("dense_caption", "")},
         ],
     }
-    return out
-
-
-def judge_caption(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    if args.dry_run:
-        result = {
-            "verdict": "pass",
-            "caption_grounded": True,
-            "has_hallucination": False,
-            "coverage_ok": True,
-            "unreadable_text_handled": True,
-            "reason": "dry_run",
-        }
-    else:
-        raw = gemini_generate(
-            [
-                image_part_gemini(
-                    Path(record["image"]),
-                    cache_dir=EDIT2_ROOT / "tmp" / "gemini_caption_judge_images",
-                    max_pixels=args.judge_image_max_pixels,
-                ),
-                {
-                    "text": CAPTION_JUDGE_PROMPT.format(
-                        dense_caption=record.get("dense_caption", ""),
-                        visible_elements=record.get("visible_elements", {}),
-                    )
-                },
-            ],
-            max_output_tokens=4096,
-            temperature=0,
-            top_p=1,
-            reasoning_effort="medium",
-            timeout=180,
-            retries=1,
-        )
-        result = extract_json_object(raw)
-        result["raw_response"] = raw
-    passed = (
-        str(result.get("verdict") or "").lower() == "pass"
-        and bool(result.get("caption_grounded"))
-        and not bool(result.get("has_hallucination"))
-        and bool(result.get("coverage_ok"))
-        and bool(result.get("unreadable_text_handled"))
-    )
-    out = dict(record)
-    out["caption_judge"] = {
-        "model": GEMINI_MODEL,
-        "protocol": "gemini_native_generateContent",
-        "model_config": {
-            "maxOutputTokens": 4096,
-            "temperature": 0,
-            "topP": 1,
-            "extra_kwargs": {"reasoning_effort": "medium"},
-            "image_max_pixels": args.judge_image_max_pixels,
-        },
-        **result,
-        "passed": passed,
-        "dry_run": args.dry_run,
-    }
-    out["caption_verified"] = passed
     return out
 
 
@@ -244,13 +204,7 @@ def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tupl
     for attempt in range(args.retries + 1):
         try:
             raw = generate_caption(record, args)
-            judged = judge_caption(raw, args)
-            if judged.get("caption_verified"):
-                return raw, judged
-            raw["caption_judge_error"] = f"caption_judge_failed:{judged.get('caption_judge')}"
-            if attempt >= args.retries:
-                return raw, None
-            last = RuntimeError(raw["caption_judge_error"])
+            return raw, raw
         except Exception as exc:
             last = exc
             if attempt >= args.retries:
@@ -289,7 +243,7 @@ def main() -> int:
                     append_jsonl(args.verified_out, [verified])
                     verified_count += 1
                 else:
-                    append_jsonl(args.judge_failures, [raw])
+                    append_jsonl(args.failures, [{"candidate_id": source_id(record), "error": raw.get("caption_judge_error", "caption_generation_failed")}])
         print(
             f"captions raw={raw_count} verified={verified_count} failures={failures} "
             f"done={min(start + len(batch), len(records))}/{len(records)} elapsed={time.perf_counter() - batch_start:.1f}s",

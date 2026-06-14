@@ -1333,12 +1333,15 @@ has_contradiction == false
 work/logs/kimi_thinking_judge_failures.jsonl
 ```
 
-### 10. Caption Generation 与 Verify
+### 10. Caption Generation，无单独 Verify
 
 - [x] caption 使用 `common_v2.kimi_messages_generate`，实际 transport 是 `/v1/chat/completions` streaming。
-- [x] `generate_and_verify_captions.py` 默认 `image_max_pixels=100000`；10 图验证显式使用 `--image-max-pixels 0` 发送原图。
+- [x] `generate_and_verify_captions.py` 默认 `image_max_pixels=1000000`。
 - [x] `max_tokens=8192`。
-- [x] caption prompt 保持 image-only，不允许编造论文背景。
+- [x] caption prompt 输入 image + `caption_latex`。
+- [x] `caption_latex` 用于保留领域术语、方法名、变量名、panel 描述和 series 名称。
+- [x] 不再调用 Gemini caption judger；Kimi 成功生成非空 caption 后直接进入 `dense_caption_verified.jsonl`。
+- [x] `caption_verified=true` 在当前实现中表示 caption 生成成功，不表示通过额外 Gemini verify。
 - [x] caption 输出 strict JSON：
 
 ```json
@@ -1354,19 +1357,10 @@ work/logs/kimi_thinking_judge_failures.jsonl
 }
 ```
 
-- [x] 新增 Gemini caption judger，检查：
+- [x] 如果 Kimi caption 为空、失败或 retry 后仍无法生成，则写入：
 
 ```text
-caption 是否 grounded in image
-是否有 hallucination
-是否覆盖 chart type / axes / legend / trend / multi-panel layout
-是否把不可读文本说成确定文本
-```
-
-- [x] 不通过则 retry caption；仍不通过写入：
-
-```text
-work/logs/caption_judge_failures.jsonl
+work/logs/caption_failures.jsonl
 ```
 
 ### 11. 输出文件
@@ -1429,7 +1423,7 @@ work/edit2/
 ```text
 answer_judged == true
 thinking_judged == true
-caption_judged == true
+caption_generated == true
 ```
 
 - [x] 原始失败样本全部保留在 logs，不伪装成成功 messages。

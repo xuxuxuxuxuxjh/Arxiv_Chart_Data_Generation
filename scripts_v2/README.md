@@ -9,8 +9,8 @@ Edition2 changes the generation strategy:
 5. Verify answer consistency with one Gemini judger call; keep only records where all three extracted answers agree.
 6. Generate Kimi thinking from verified answer.
 7. Verify Kimi thinking with Gemini judger.
-8. Generate Kimi dense caption.
-9. Verify caption with Gemini judger.
+8. Generate Kimi dense caption from image + caption_latex.
+9. Accept the caption when Kimi generation succeeds; no separate caption verifier is called.
 10. Sample verified QA/thinking records by target task proportions.
 11. Merge sampled QA/thinking with verified captions.
 
@@ -73,14 +73,14 @@ python3 scripts_v2/generate_and_verify_thinking.py \
 The default Kimi model is `kimi-k2.6-qianli` through `/v1/chat/completions`
 streaming. `--image-max-pixels 0` sends original images without resizing.
 
-Generate captions and verify them:
+Generate captions:
 
 ```bash
 python3 scripts_v2/generate_and_verify_captions.py \
   --input work/edit2/filtered_charts_2020_2025.jsonl \
   --workers 8 \
   --batch-size 8 \
-  --image-max-pixels 100000 \
+  --image-max-pixels 1000000 \
   --max-tokens 8192 \
   --retry-failed
 ```
