@@ -12,7 +12,6 @@ from common_v2 import (
     EDIT2_ROOT,
     GEMINI_MODEL,
     KIMI_MESSAGES_MODEL,
-    KIMI_THINKING_BUDGET_TOKENS,
     append_jsonl,
     extract_final_answer,
     extract_json_object,
@@ -79,10 +78,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--image-max-pixels", type=int, default=0, help="0 sends the original image without resizing.")
-    parser.add_argument("--max-tokens", type=int, default=8192)
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--max-tokens", type=int, default=64000)
+    parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--judge-image-max-pixels", type=int, default=350000)
+    parser.add_argument(
+        "--skip-judge",
+        action="store_true",
+        help="Accept Kimi thinking when generation succeeds and the final answer matches; useful for Kimi throughput tests.",
+    )
     parser.add_argument(
         "--retry-failed",
         action="store_true",
@@ -136,7 +140,7 @@ def generate_thinking(record: dict[str, Any], args: argparse.Namespace) -> dict[
             "temperature": 1,
             "top_p": 0.95,
             "top_k": -1,
-            "extra_kwargs": {"thinking": {"type": "enabled", "budget_tokens": KIMI_THINKING_BUDGET_TOKENS}},
+            "extra_kwargs": {"thinking": {"type": "enabled"}},
             "stream": True,
             "timeout": args.timeout,
             "retries": args.retries,
@@ -229,6 +233,20 @@ def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tupl
     for attempt in range(args.retries + 1):
         try:
             raw = generate_thinking(record, args)
+            if args.skip_judge:
+                raw["kimi_thinking_judge"] = {
+                    "verdict": "skipped",
+                    "final_answer_matches": bool(
+                        (raw.get("kimi_thinking") or {}).get("final_answer_matches_verified_answer")
+                    ),
+                    "reasoning_grounded": None,
+                    "has_contradiction": None,
+                    "passed": bool((raw.get("kimi_thinking") or {}).get("final_answer_matches_verified_answer")),
+                    "reason": "Gemini thinking judge skipped",
+                    "dry_run": args.dry_run,
+                }
+                raw["thinking_verified"] = bool(raw["kimi_thinking_judge"]["passed"])
+                return raw, raw if raw["thinking_verified"] else None
             judged = judge_thinking(raw, args)
             if judged.get("thinking_verified"):
                 return raw, judged
@@ -315,6 +333,7 @@ def main() -> int:
             "new_failures": failures,
             "retry_failed": args.retry_failed,
             "dry_run": args.dry_run,
+            "skip_judge": args.skip_judge,
         },
     )
     return 0

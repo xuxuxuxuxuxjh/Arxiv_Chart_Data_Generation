@@ -62,10 +62,10 @@ Generate Kimi thinking and verify it:
 ```bash
 python3 scripts_v2/generate_and_verify_thinking.py \
   --input work/edit2/answers_verified.jsonl \
-  --workers 24 \
-  --batch-size 192 \
+  --workers 8 \
+  --batch-size 8 \
   --image-max-pixels 0 \
-  --max-tokens 8192 \
+  --max-tokens 64000 \
   --timeout 300 \
   --retry-failed
 ```

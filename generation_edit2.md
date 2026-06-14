@@ -1247,7 +1247,7 @@ work/edit2/answers_verified.jsonl
 - [x] thinking generation 由 `scripts_v2/generate_and_verify_thinking.py` 调用 `common_v2.kimi_messages_generate`。
 - [x] 使用 `/v1/chat/completions`，开启 streaming，收集 `reasoning_content` 为 `<think>...</think>`。
 - [x] 使用 `kimi-k2.6-qianli`。
-- [x] `max_tokens=8192`。
+- [x] `max_tokens=64000`。
 - [x] thinking 阶段不 resize 图片，直接发送原图：
 
 ```text
@@ -1260,7 +1260,7 @@ image_max_pixels = 0
 temperature=1
 top_p=0.95
 top_k=-1
-extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": 2048}}
+extra_kwargs={"thinking": {"type": "enabled"}}
 ```
 
 - [x] `generate_and_verify_thinking.py` 默认参数：
@@ -1268,11 +1268,11 @@ extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": 2048}}
 ```text
 workers=8
 batch_size=8
-timeout=120
+timeout=300
 retries=1
 ```
 
-10 图验证时，thinking 补跑使用 `scripts_v2/run_edit2_10_thinking_shards.sh` 拆成 4 个 shard，每个 shard `workers=8`、`batch-size=8`。
+Kimi thinking throughput test 可以加 `--skip-judge`，只统计 Kimi 生成耗时，不混入 Gemini thinking judge 耗时。
 
 - [x] thinking prompt 输入 verified answer，而不是未验证 answer。
 - [x] prompt 要求：

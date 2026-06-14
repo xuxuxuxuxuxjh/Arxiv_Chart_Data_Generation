@@ -35,7 +35,6 @@ GEMINI_ENDPOINT = (
 KIMI_MODEL = os.environ.get("ARXIV_CHART_KIMI_MODEL", "kimi-k2.6-qianli")
 KIMI_BASE_URL = os.environ.get("ARXIV_CHART_KIMI_BASE_URL", "https://models-proxy.stepfun-inc.com/v1")
 KIMI_ENDPOINT = f"{KIMI_BASE_URL}/chat/completions"
-KIMI_THINKING_BUDGET_TOKENS = int(os.environ.get("ARXIV_CHART_KIMI_THINKING_BUDGET_TOKENS", "2048"))
 # Backward-compatible names for the v2 scripts. The transport is now OpenAI-style
 # chat/completions with streaming reasoning, not Anthropic messages.
 KIMI_MESSAGES_MODEL = KIMI_MODEL
@@ -498,7 +497,7 @@ def kimi_messages_generate(
         top_k=-1,
         timeout=timeout,
         retries=retries,
-        extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": KIMI_THINKING_BUDGET_TOKENS}},
+        extra_kwargs={"thinking": {"type": "enabled"}},
         stream=True,
     )
 
@@ -568,6 +567,7 @@ def simple_phash(path: Path, hash_size: int = 8) -> str:
 
 def extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
+    stripped = re.sub(r"<think>.*?</think>", "", stripped, flags=re.I | re.S).strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.I | re.S)
     if fence:
         stripped = fence.group(1).strip()
@@ -600,8 +600,9 @@ def extract_final_answer(text: str) -> str:
     if match:
         answer = match.group(1).strip()
         answer = re.sub(r"</?answer>", "", answer, flags=re.I).strip()
-        return answer.splitlines()[0].strip() if "\n" in answer else answer
-    return text.strip().splitlines()[-1].strip() if text.strip() else ""
+        answer = answer.splitlines()[0].strip() if "\n" in answer else answer
+        return answer.strip("`\"'“”‘’")
+    return text.strip().splitlines()[-1].strip("`\"'“”‘’") if text.strip() else ""
 
 
 def extract_thinking_and_final_answer(text: str) -> dict[str, str]:
