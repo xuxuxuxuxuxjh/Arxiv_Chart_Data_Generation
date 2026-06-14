@@ -1137,11 +1137,12 @@ work/edit2/question_candidates.jsonl
 
 - [x] 每条候选包含 `candidate_id + task_type`，后续按 verify 结果和目标比例再采样。
 
-### 5. Gemini 生成 Answer：先 Think 后 Answer
+### 5. Gemini 生成 Answer：三次独立生成，先 Think 后 Answer
 
 - [x] 新增 `scripts_v2/generate_and_verify_answers.py`。
-- [x] answer prompt 改成要求 Gemini 先推理再给最终答案。
-- [x] 当前输出格式：
+- [x] 每个 question 调用 Gemini 生成 3 次 answer。
+- [x] 每次 answer prompt 都要求 Gemini 先推理再给最终答案。
+- [x] 每次当前输出格式：
 
 ```text
 <think>
@@ -1161,7 +1162,8 @@ Final answer: ...
 }
 ```
 
-- [x] 保留 Gemini answer thinking，后续 judger 可参考，但最终训练时是否保留另行决定。
+- [x] `answer_generation.samples` 保留 3 次原始输出、thinking、final answer、normalized answer。
+- [x] 通过一致性 verify 后，`answer_generation.final_answer` 和顶层 `answer` 使用 consistency judge 选出的 canonical answer。
 
 ### 6. 写 Answer Extractor 和 Retry
 
@@ -1186,7 +1188,7 @@ Final answer: ...
 ```
 
 - [x] extractor 失败时自动 retry。
-- [x] retry 后仍失败，写入：
+- [x] 任意一次 answer generation 的 extractor retry 后仍失败，则整道题放弃，写入：
 
 ```text
 work/logs/answer_extraction_failures.jsonl
@@ -1194,30 +1196,32 @@ work/logs/answer_extraction_failures.jsonl
 
 - [x] 不允许 extractor 失败的样本进入 verified QA。
 
-### 7. Answer Verify 改成 Gemini Judger
+### 7. Answer Verify：三次 Answer 一致性 Gemini Judger
 
-- [x] 不再用三次 exact consensus 作为主 verify。
-- [x] 新增 Gemini judger，对 image + question + candidate answer 做判断。
+- [x] Answer Verify 不判断图像答案是否正确，只判断 3 次 extractor 后的 final answer 是否一致。
+- [x] 新增 Gemini consistency judger，对同一 question 的 3 个 extracted final answers 做一致性判断。
+- [x] consistency judger 不输入 image。
 - [x] judger prompt 输入：
 
 ```text
-image
 question
 task_type
 answer_type
-candidate thinking
-candidate final answer
+extracted final answer 1
+extracted final answer 2
+extracted final answer 3
 ```
 
 - [x] judger 输出 strict JSON：
 
 ```json
 {
-  "verdict": "correct",
-  "is_answerable_from_image": true,
-  "answer_matches_image": true,
+  "verdict": "consistent",
+  "all_answers_consistent": true,
+  "canonical_answer": "...",
+  "canonical_answer_index": 1,
+  "normalized_answers": ["...", "...", "..."],
   "normalized_answer": "...",
-  "corrected_answer": null,
   "reason": "..."
 }
 ```
@@ -1225,15 +1229,18 @@ candidate final answer
 - [x] 通过条件：
 
 ```text
-verdict == correct
-is_answerable_from_image == true
-answer_matches_image == true
+verdict == consistent
+all_answers_consistent == true
+canonical_answer 非空
 ```
 
-- [x] 如果 judger 判错：
-  - 第一次：retry answer generation。
-  - 第二次：retry judger。
-  - 仍失败：写入 `work/logs/answer_judge_failures.jsonl`，不进入 verified QA。
+- [x] 如果 3 次 answer 不一致，直接写入 `work/logs/answer_judge_failures.jsonl`，不进入 verified QA。
+- [x] 如果 consistency judger 解析失败，按 `--judge-retries` 重试；仍失败则写入 `work/logs/answer_judge_failures.jsonl`，不进入 verified QA。
+- [x] 通过一致性判断的记录写入：
+
+```text
+work/edit2/answers_verified.jsonl
+```
 
 ### 8. Kimi Thinking Generation
 

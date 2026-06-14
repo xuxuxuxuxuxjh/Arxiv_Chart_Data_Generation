@@ -14,11 +14,13 @@ from common_v2 import (
     extract_json_object,
     extract_thinking_and_final_answer,
     gemini_generate,
-    image_part_gemini,
     iter_jsonl,
     normalize_answer,
     write_json,
 )
+
+
+ANSWER_VERIFY_SCHEMA_VERSION = "triple_consistency_v1"
 
 
 ANSWER_PROMPT = """Answer this chart question using only visible chart evidence.
@@ -43,39 +45,40 @@ Final answer: ...
 """
 
 
-JUDGE_PROMPT = """You are a strict chart QA verifier.
+CONSISTENCY_JUDGE_PROMPT = """You are a strict answer consistency judge.
 
-Judge whether the candidate answer is correct using only the visible chart image.
+Compare the extracted final answers from three independent Gemini answer generations.
+Do not use the chart image. Do not decide whether the answer is visually correct.
+Only decide whether all extracted final answers are semantically the same answer to the same question.
 
 Input:
 Question: {question}
 Task type: {task_type}
 Answer type: {answer_type}
-Candidate reasoning:
-{thinking}
-Candidate final answer:
-{final_answer}
+Extracted final answers:
+{answers}
 
 Rules:
-- If the question is not answerable from the image alone, mark incorrect unless the candidate final answer says so.
-- For approximate numeric answers, allow reasonable visual reading tolerance.
-- For trend, comparison, ranking, and hypothetical questions, judge semantic correctness rather than exact wording.
-- Do not reward hallucinated paper context.
+- For approximate numeric answers, allow small rounding or visual-reading differences only when scale and unit match.
+- For trend, comparison, ranking, boolean, and choice answers, require the same conclusion.
+- If any answer says the question is not answerable from the image alone, all three must say that to be consistent.
+- Do not invent a corrected answer. Choose the canonical answer only from the three extracted answers.
 
 Return strict JSON only:
 {{
-  "verdict": "correct",
-  "is_answerable_from_image": true,
-  "answer_matches_image": true,
+  "verdict": "consistent",
+  "all_answers_consistent": true,
+  "canonical_answer": "...",
+  "canonical_answer_index": 1,
+  "normalized_answers": ["...", "...", "..."],
   "normalized_answer": "...",
-  "corrected_answer": null,
   "reason": "..."
 }}
 """
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Gemini answers and verify them with Gemini judger.")
+    parser = argparse.ArgumentParser(description="Generate three Gemini answers and verify answer consistency.")
     parser.add_argument("--input", type=Path, default=EDIT2_ROOT / "question_candidates.jsonl")
     parser.add_argument("--raw-out", type=Path, default=EDIT2_ROOT / "answers_raw.jsonl")
     parser.add_argument("--verified-out", type=Path, default=EDIT2_ROOT / "answers_verified.jsonl")
@@ -91,6 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-max-pixels", type=int, default=350000)
+    parser.add_argument("--answer-samples", type=int, default=3, help="Independent Gemini answer generations per question.")
     parser.add_argument("--answer-retries", type=int, default=1)
     parser.add_argument("--judge-retries", type=int, default=1)
     parser.add_argument(
@@ -102,13 +106,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def done_ids(path: Path) -> set[str]:
+def done_ids(path: Path, *, require_judge: bool) -> set[str]:
     if not path.exists():
         return set()
-    return {record["id"] for record in iter_jsonl(path)}
+    ids: set[str] = set()
+    for record in iter_jsonl(path):
+        generation = record.get("answer_generation") or {}
+        judge = record.get("answer_judge") or {}
+        has_generation = generation.get("schema_version") == ANSWER_VERIFY_SCHEMA_VERSION
+        has_judge = judge.get("schema_version") == ANSWER_VERIFY_SCHEMA_VERSION
+        if has_generation and (has_judge or not require_judge):
+            ids.add(record["id"])
+    return ids
 
 
-def answer_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def answer_once(record: dict[str, Any], args: argparse.Namespace, sample_index: int, attempt: int) -> dict[str, Any]:
     if args.dry_run:
         raw = "<think>The visible evidence supports the answer.</think>\nFinal answer: chart value"
     else:
@@ -134,9 +146,14 @@ def answer_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, A
             timeout=240,
             retries=1,
         )
-    extracted = extract_thinking_and_final_answer(raw)
-    out = dict(record)
-    out["answer_generation"] = {
+    try:
+        extracted = extract_thinking_and_final_answer(raw)
+    except Exception as exc:
+        raise ValueError(f"answer_extraction_failed sample_index={sample_index} attempt={attempt}: {exc}") from exc
+    final_answer = extracted["final_answer"]
+    return {
+        "sample_index": sample_index,
+        "attempt": attempt,
         "model": GEMINI_MODEL,
         "protocol": "gemini_native_generateContent",
         "model_config": {
@@ -148,45 +165,99 @@ def answer_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, A
         },
         "raw_response": raw,
         "thinking": extracted["thinking"],
-        "final_answer": extracted["final_answer"],
+        "final_answer": final_answer,
+        "normalized_answer": normalize_answer(final_answer, record.get("answer_type", "short_phrase")),
         "extract_format": extracted["format"],
         "dry_run": args.dry_run,
     }
-    out["answer"] = extracted["final_answer"]
-    out["answer_normalized"] = normalize_answer(extracted["final_answer"], record.get("answer_type", "short_phrase"))
+
+
+def generate_answer_samples(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    if args.answer_samples != 3:
+        raise ValueError("answer consistency verification requires --answer-samples 3")
+    samples: list[dict[str, Any]] = []
+    for sample_index in range(1, args.answer_samples + 1):
+        last_error: Exception | None = None
+        for attempt in range(args.answer_retries + 1):
+            try:
+                sample = answer_once(record, args, sample_index, attempt + 1)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= args.answer_retries:
+                    break
+                time.sleep(1 + attempt)
+                continue
+            samples.append(sample)
+            break
+        else:
+            last_error = RuntimeError("unreachable answer retry state")
+        if len(samples) < sample_index:
+            assert last_error is not None
+            raise RuntimeError(f"answer_sample_failed sample_index={sample_index}: {last_error!r}") from last_error
+
+    first = samples[0]
+    out = dict(record)
+    out["answer_generation"] = {
+        "schema_version": ANSWER_VERIFY_SCHEMA_VERSION,
+        "model": GEMINI_MODEL,
+        "protocol": "gemini_native_generateContent",
+        "sample_count": args.answer_samples,
+        "samples": samples,
+        "final_answers": [sample["final_answer"] for sample in samples],
+        "normalized_answers": [sample["normalized_answer"] for sample in samples],
+        "raw_response": first["raw_response"],
+        "thinking": first["thinking"],
+        "final_answer": first["final_answer"],
+        "extract_format": first["extract_format"],
+        "model_config": {
+            "maxOutputTokens": 8192,
+            "temperature": 0.7,
+            "topP": 0.95,
+            "extra_kwargs": {"reasoning_effort": "high"},
+            "image_max_pixels": args.image_max_pixels,
+        },
+        "dry_run": args.dry_run,
+    }
+    out["answer"] = first["final_answer"]
+    out["answer_normalized"] = first["normalized_answer"]
     return out
+
+
+def format_answers_for_judge(samples: list[dict[str, Any]]) -> str:
+    lines = []
+    for sample in samples:
+        lines.append(f"{sample['sample_index']}. {sample['final_answer']}")
+    return "\n".join(lines)
 
 
 def judge_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     answer_generation = record.get("answer_generation") or {}
+    samples = answer_generation.get("samples") or []
+    if len(samples) != 3:
+        raise ValueError(f"expected 3 extracted answers, got {len(samples)}")
     if args.dry_run:
         result = {
-            "verdict": "correct",
-            "is_answerable_from_image": True,
-            "answer_matches_image": True,
-            "normalized_answer": record.get("answer_normalized") or record.get("answer"),
-            "corrected_answer": None,
+            "verdict": "consistent",
+            "all_answers_consistent": True,
+            "canonical_answer": samples[0]["final_answer"],
+            "canonical_answer_index": 1,
+            "normalized_answers": [sample["normalized_answer"] for sample in samples],
+            "normalized_answer": samples[0]["normalized_answer"],
             "reason": "dry_run",
         }
     else:
         raw = gemini_generate(
             [
-                image_part_gemini(
-                    Path(record["image"]),
-                    cache_dir=EDIT2_ROOT / "tmp" / "gemini_answer_judge_images",
-                    max_pixels=args.image_max_pixels,
-                ),
                 {
-                    "text": JUDGE_PROMPT.format(
+                    "text": CONSISTENCY_JUDGE_PROMPT.format(
                         question=record["question"],
                         task_type=record.get("task_type"),
                         answer_type=record.get("answer_type"),
-                        thinking=answer_generation.get("thinking", ""),
-                        final_answer=answer_generation.get("final_answer", record.get("answer", "")),
+                        answers=format_answers_for_judge(samples),
                     )
                 },
             ],
-            max_output_tokens=4096,
+            max_output_tokens=2048,
             temperature=0,
             top_p=1,
             reasoning_effort="medium",
@@ -196,21 +267,39 @@ def judge_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, An
         result = extract_json_object(raw)
         result["raw_response"] = raw
     verdict = str(result.get("verdict") or "").lower()
-    passed = (
-        verdict == "correct"
-        and bool(result.get("is_answerable_from_image"))
-        and bool(result.get("answer_matches_image"))
-    )
+    canonical_answer = str(result.get("canonical_answer") or "").strip()
+    passed = verdict == "consistent" and bool(result.get("all_answers_consistent")) and bool(canonical_answer)
     out = dict(record)
+    answer_generation = dict(answer_generation)
+    if canonical_answer:
+        answer_generation["final_answer"] = canonical_answer
+        answer_generation["normalized_answer"] = normalize_answer(canonical_answer, record.get("answer_type", "short_phrase"))
+        answer_generation["consistency_verified"] = passed
+        canonical_index = result.get("canonical_answer_index")
+        if canonical_index is not None:
+            answer_generation["canonical_answer_index"] = canonical_index
+            try:
+                idx = int(canonical_index) - 1
+                if 0 <= idx < len(samples):
+                    answer_generation["thinking"] = samples[idx].get("thinking", "")
+                    answer_generation["raw_response"] = samples[idx].get("raw_response", "")
+            except (TypeError, ValueError):
+                pass
+        out["answer"] = canonical_answer
+        out["answer_normalized"] = answer_generation["normalized_answer"]
+    else:
+        answer_generation["consistency_verified"] = False
+    out["answer_generation"] = answer_generation
     out["answer_judge"] = {
         "model": GEMINI_MODEL,
+        "schema_version": ANSWER_VERIFY_SCHEMA_VERSION,
         "protocol": "gemini_native_generateContent",
         "model_config": {
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 2048,
             "temperature": 0,
             "topP": 1,
             "extra_kwargs": {"reasoning_effort": "medium"},
-            "image_max_pixels": args.image_max_pixels,
+            "image_input": False,
         },
         **result,
         "passed": passed,
@@ -221,46 +310,32 @@ def judge_once(record: dict[str, Any], args: argparse.Namespace) -> dict[str, An
 
 
 def generate_and_judge(record: dict[str, Any], args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    last_answer_error: Exception | None = None
-    for answer_attempt in range(args.answer_retries + 1):
+    answered = generate_answer_samples(record, args)
+    last_judge_error: Exception | None = None
+    for judge_attempt in range(args.judge_retries + 1):
         try:
-            answered = answer_once(record, args)
+            judged = judge_once(answered, args)
         except Exception as exc:
-            last_answer_error = exc
-            if answer_attempt >= args.answer_retries:
-                raise
-            time.sleep(1 + answer_attempt)
+            last_judge_error = exc
+            if judge_attempt >= args.judge_retries:
+                break
+            time.sleep(1 + judge_attempt)
             continue
-
-        last_judge_error: Exception | None = None
-        for judge_attempt in range(args.judge_retries + 1):
-            try:
-                judged = judge_once(answered, args)
-            except Exception as exc:
-                last_judge_error = exc
-                if judge_attempt >= args.judge_retries:
-                    break
-                time.sleep(1 + judge_attempt)
-                continue
-            if judged.get("answer_verified"):
-                return answered, judged
-            last_judge_error = RuntimeError(f"answer_judge_failed:{judged.get('answer_judge')}")
-            break
-        if answer_attempt < args.answer_retries:
-            time.sleep(1 + answer_attempt)
-            continue
-        if last_judge_error:
-            answered["answer_judge_error"] = repr(last_judge_error)
-            return answered, None
-    assert last_answer_error is not None
-    raise last_answer_error
+        if judged.get("answer_verified"):
+            return answered, judged
+        answered["answer_judge_error"] = f"answer_consistency_failed:{judged.get('answer_judge')}"
+        return answered, None
+    if last_judge_error:
+        answered["answer_judge_error"] = repr(last_judge_error)
+        return answered, None
+    raise RuntimeError("answer consistency judge failed without error")
 
 
 def main() -> int:
     args = parse_args()
-    done = done_ids(args.verified_out)
+    done = done_ids(args.verified_out, require_judge=True)
     if not args.retry_failed:
-        done |= done_ids(args.raw_out)
+        done |= done_ids(args.raw_out, require_judge=False)
     records = [record for record in iter_jsonl(args.input) if record["id"] not in done]
     if args.limit:
         records = records[: args.limit]
@@ -283,7 +358,12 @@ def main() -> int:
                         "error": repr(exc),
                     }
                     append_jsonl(args.failures, [failure_record])
-                    if "final answer" in repr(exc).lower() or "empty model response" in repr(exc).lower():
+                    error_text = repr(exc).lower()
+                    if (
+                        "answer_extraction_failed" in error_text
+                        or "final answer" in error_text
+                        or "empty model response" in error_text
+                    ):
                         append_jsonl(args.extraction_failures, [failure_record])
                     continue
                 append_jsonl(args.raw_out, [raw_record])

@@ -5,8 +5,8 @@ Edition2 changes the generation strategy:
 1. Filter/classify charts from 2020-2025.
 2. Do not quota-sample images before QA generation.
 3. For each chart image, try every task type and build a question candidate pool.
-4. Generate Gemini answer with thinking and extract final answer.
-5. Verify answer with Gemini judger.
+4. Generate three independent Gemini answers with thinking and extract final answers.
+5. Verify answer consistency with one Gemini judger call; keep only records where all three extracted answers agree.
 6. Generate Kimi thinking from verified answer.
 7. Verify Kimi thinking with Gemini judger.
 8. Generate Kimi dense caption.
@@ -45,7 +45,7 @@ python3 scripts_v2/generate_question_candidates.py \
 
 `--group-tasks-per-image` keeps the same output contract, but uses one model call per image to request all missing task types. The script is resumable: existing `(candidate_id, task_type)` pairs in `question_candidates.jsonl` are skipped.
 
-Generate Gemini answers and verify them:
+Generate three Gemini answers and verify answer consistency:
 
 ```bash
 python3 scripts_v2/generate_and_verify_answers.py \
@@ -53,6 +53,7 @@ python3 scripts_v2/generate_and_verify_answers.py \
   --extraction-failures work/edit2/logs/answer_extraction_failures.jsonl \
   --workers 8 \
   --batch-size 16 \
+  --answer-samples 3 \
   --retry-failed
 ```
 
