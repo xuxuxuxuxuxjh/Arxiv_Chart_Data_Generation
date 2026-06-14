@@ -526,7 +526,7 @@ thinking 分两类输出：
 scripts/generate_kimi_thinking_response.py
 ```
 
-但初版路径不推荐继续使用，因为它用：
+但初版路径不再作为正式路径使用，因为它用：
 
 ```text
 /v1/chat/completions
@@ -537,13 +537,13 @@ max_tokens: 250000
 
 这个组合慢、容易 429，并且失败时会 fallback 成只有 answer，没有真正 thinking。
 
-当前推荐脚本：
+当前正式脚本：
 
 ```text
 scripts/repair_kimi_pilot_outputs.py
 ```
 
-推荐命令：
+当前命令：
 
 ```bash
 python3 scripts/repair_kimi_pilot_outputs.py \
@@ -569,7 +569,7 @@ python3 scripts/repair_kimi_pilot_outputs.py \
   --timeout 120
 ```
 
-推荐 Kimi 配置：
+当前 Kimi 配置：
 
 ```text
 endpoint: /v1/messages
@@ -678,9 +678,9 @@ caption 是 dense caption，不是 QA answer。
 scripts/generate_dense_caption.py
 ```
 
-同样，初版脚本使用 `/v1/chat/completions + max_tokens=250000 + 原图`，不推荐继续作为最终生成方式。
+同样，初版脚本使用 `/v1/chat/completions + max_tokens=250000 + 原图`，不再作为最终生成方式。
 
-推荐使用：
+当前使用：
 
 ```text
 scripts/repair_kimi_pilot_outputs.py --kind caption
@@ -919,7 +919,7 @@ merged:
 - 增加 multi-step visual reasoning。
 - 对不同 task type 设置不同 answer type。
 
-建议 edition2 类别：
+edition2 类别：
 
 ```text
 cross_panel_comparison:      25%
@@ -941,15 +941,42 @@ Do not ask for subplot labels such as (a), (b), top, bottom only.
 Do not ask generic "what is shown/plotted" questions.
 ```
 
-## Edition2 Task List
+## Edition2 scripts_v2 Pipeline
 
-目标：第二版不再做小规模 sampling pilot，而是对 2020-2025 年通过 chart filter 的图片全部生成 QA / thinking / caption。重点修复 edition1 的问题：题目太简单、answer_type 单一、consensus 偏向简单题、Kimi thinking 慢且 fallback 不透明。
+本节记录 `/home/i-xujiahao/arxiv_data/scripts_v2` 的当前实现，不是待办清单。目标是对 2020-2025 年通过 chart filter 的图片生成 QA / thinking / caption，并修复 edition1 的问题：题目偏简单、answer_type 单一、consensus 偏向简单题、Kimi thinking fallback 不透明。
+
+当前代码入口：
+
+```text
+scripts_v2/common_v2.py
+scripts_v2/classify_charts_v2.py
+scripts_v2/prepare_charts.py
+scripts_v2/generate_question_candidates.py
+scripts_v2/generate_and_verify_answers.py
+scripts_v2/generate_and_verify_thinking.py
+scripts_v2/generate_and_verify_captions.py
+scripts_v2/sample_verified_questions.py
+scripts_v2/merge_verified_outputs.py
+scripts_v2/generate_review_v2.py
+scripts_v2/export_static_review_v2.py
+scripts_v2/build_merged_review_static.py
+```
+
+默认工作目录由 `common_v2.py` 控制：
+
+```text
+ARXIV_CHART_WORK  default: /home/i-xujiahao/arxiv_data/work
+ARXIV_CHART_EDIT2 default: /home/i-xujiahao/arxiv_data/work/edit2
+GEMINI_MODEL      default: gemini-3.5-flash
+KIMI_MODEL        default: kimi-k2.6-qianli
+KIMI_ENDPOINT     default: https://models-proxy.stepfun-inc.com/v1/chat/completions
+```
 
 ### 1. 固定 Chart Type 集合
 
 - [x] 在 classifier prompt 中定义闭集 `chart_types`，要求模型只能从集合中选择，不能自由发挥。
 - [x] 把 layout 信息和 chart type 分开：`is_multi_panel`、`panel_count`、`panel_layout` 不作为 chart type。
-- [x] 建议 chart type 集合：
+- [x] 当前 chart type 集合定义在 `common_v2.CHART_TYPES`：
 
 ```text
 line_chart
@@ -1016,7 +1043,7 @@ work/edit2/filtered_charts_2020_2025.jsonl
 - [x] 参考 CharXiv Reasoning、ChartQAPro Reasoning、Hypothetical，定义更细的 task type。
 - [x] 生成阶段不要先按比例抽 task；每张图都尝试生成每个 task type 的 question，形成 question candidate pool。
 - [x] 比例只在全部生成、answer verify、thinking verify 后的最终筛选/采样阶段生效。
-- [x] 建议最终采样目标比例：
+- [x] 当前 task type 权重定义在 `common_v2.TASK_SPECS`：
 
 ```text
 cross_element_comparison        18%
@@ -1085,7 +1112,7 @@ Prefer medium/hard questions.
 The answer must be verifiable from the image alone.
 ```
 
-- [x] 输出 strict JSON，建议 schema：
+- [x] 输出 strict JSON schema：
 
 ```json
 {
@@ -1114,7 +1141,7 @@ work/edit2/question_candidates.jsonl
 
 - [x] 新增 `scripts_v2/generate_and_verify_answers.py`。
 - [x] answer prompt 改成要求 Gemini 先推理再给最终答案。
-- [x] 推荐输出格式：
+- [x] 当前输出格式：
 
 ```text
 <think>
@@ -1210,7 +1237,7 @@ answer_matches_image == true
 
 ### 8. Kimi Thinking Generation
 
-- [x] 以 `scripts/pipeline_common.py` 的 streaming chat/completions Kimi 调用为基础，抽成正式 thinking generation。
+- [x] thinking generation 由 `scripts_v2/generate_and_verify_thinking.py` 调用 `common_v2.kimi_messages_generate`。
 - [x] 使用 `/v1/chat/completions`，开启 streaming，收集 `reasoning_content` 为 `<think>...</think>`。
 - [x] 使用 `kimi-k2.6-qianli`。
 - [x] `max_tokens=8192`。
@@ -1229,14 +1256,16 @@ top_k=-1
 extra_kwargs={"thinking": {"type": "enabled", "budget_tokens": 2048}}
 ```
 
-- [x] 默认并发：
+- [x] `generate_and_verify_thinking.py` 默认参数：
 
 ```text
-workers=24
-batch_size=192
-timeout=300
+workers=8
+batch_size=8
+timeout=120
 retries=1
 ```
+
+10 图验证时，thinking 补跑使用 `scripts_v2/run_edit2_10_thinking_shards.sh` 拆成 4 个 shard，每个 shard `workers=8`、`batch-size=8`。
 
 - [x] thinking prompt 输入 verified answer，而不是未验证 answer。
 - [x] prompt 要求：
@@ -1299,8 +1328,8 @@ work/logs/kimi_thinking_judge_failures.jsonl
 
 ### 10. Caption Generation 与 Verify
 
-- [x] caption 继续使用 Kimi `/v1/messages`。
-- [x] 同样 resize 到 `H*W<=100000`。
+- [x] caption 使用 `common_v2.kimi_messages_generate`，实际 transport 是 `/v1/chat/completions` streaming。
+- [x] `generate_and_verify_captions.py` 默认 `image_max_pixels=100000`；10 图验证显式使用 `--image-max-pixels 0` 发送原图。
 - [x] `max_tokens=8192`。
 - [x] caption prompt 保持 image-only，不允许编造论文背景。
 - [x] caption 输出 strict JSON：
@@ -1333,14 +1362,14 @@ caption 是否 grounded in image
 work/logs/caption_judge_failures.jsonl
 ```
 
-### 11. 输出文件建议
+### 11. 输出文件
 
-- [x] 第二版输出放到独立目录，避免覆盖 edition1：
+- [x] 第二版默认输出目录：
 
 ```text
 work/edit2/
   filtered_charts_2020_2025.jsonl
-  questions.jsonl
+  question_candidates.jsonl
   answers_raw.jsonl
   answers_verified.jsonl
   kimi_thinking_raw.jsonl
@@ -1350,6 +1379,42 @@ work/edit2/
   merged.jsonl
   reports/
   logs/
+```
+
+- [x] 10 图端到端验证输出目录：
+
+```text
+/home/i-xujiahao/arxiv_data/work_local/edit2_10_full/
+  filtered_charts_2020_2025.jsonl
+  question_candidates.jsonl
+  answers_raw.jsonl
+  answers_verified.jsonl
+  kimi_thinking_raw.jsonl
+  kimi_thinking_verified.jsonl
+  dense_caption_raw.jsonl
+  dense_caption_verified.jsonl
+  qa_thinking_sampled.jsonl
+  merged.jsonl
+  reports/
+  logs/
+```
+
+- [x] 10 图静态 review 输出目录：
+
+```text
+/home/i-xujiahao/arxiv_data/edit2_10_full_review_static/
+  index.html
+  records.jsonl
+  assets/
+```
+
+- [x] Jupyter 可访问副本：
+
+```text
+/data/jupyter/arxiv_chart_review/
+  index.html
+  records.jsonl
+  assets/
 ```
 
 - [x] merged 文件只收 verified 样本：
@@ -1362,18 +1427,41 @@ caption_judged == true
 
 - [x] 原始失败样本全部保留在 logs，不伪装成成功 messages。
 
-### 12. 最小实现顺序
+### 12. 当前 10 图端到端验证结果
 
-- [x] 改 classifier chart type enum。
-- [x] 导出全部 filtered/deduped 2020-2025 chart 输入，不做 sampling。
-- [x] 改 question task type 和 prompt，每图尝试全部 task type，生成 question candidate pool。
-- [x] 改 Gemini answer 生成格式：think + final answer。
-- [x] 写 answer extractor + retry。
-- [x] 写 Gemini answer judger。
-- [x] 改 Kimi thinking generation：chat/completions streaming + qianli + 原图 + 8192 tokens + thinking budget + 并发。
-- [x] 写 Gemini thinking judger。
-- [x] 改 caption generation 使用同样 resize/Kimi 配置。
-- [x] 写 Gemini caption judger。
-- [x] 在 verified QA/thinking pool 上按 task_type 目标比例做最终采样。
-- [x] 写 edit2 merge。
-- [x] 生成 review HTML，只展示 verified 样本。
+执行脚本：
+
+```text
+scripts_v2/run_edit2_10_full_pipeline.sh
+scripts_v2/run_edit2_10_thinking_shards.sh
+scripts_v2/build_merged_review_static.py
+```
+
+最终产物：
+
+```text
+/home/i-xujiahao/arxiv_data/work_local/edit2_10_full/merged.jsonl
+/home/i-xujiahao/arxiv_data/edit2_10_full_review_static/index.html
+/home/i-xujiahao/arxiv_data/edit2_10_full_review_static/records.jsonl
+```
+
+计数：
+
+```text
+filtered_charts_2020_2025.jsonl: 10
+question_candidates.jsonl:       80
+answers_verified.jsonl:          76
+kimi_thinking_verified.jsonl:    76
+dense_caption_verified.jsonl:    10
+qa_thinking_sampled.jsonl:       76
+merged.jsonl:                    76
+unique_images_in_merged:         10
+```
+
+merged 中每条记录同时满足：
+
+```text
+verified.answer == true
+verified.thinking == true
+verified.caption == true
+```
