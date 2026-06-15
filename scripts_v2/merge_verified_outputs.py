@@ -75,6 +75,8 @@ def main() -> int:
                 "kimi_thinking": qa.get("kimi_thinking"),
                 "kimi_thinking_judge": qa.get("kimi_thinking_judge"),
                 "dense_caption": (caption or {}).get("dense_caption"),
+                "caption_thinking": (caption or {}).get("caption_thinking")
+                or ((caption or {}).get("caption_generation") or {}).get("thinking"),
                 "visible_elements": (caption or {}).get("visible_elements"),
                 "uncertainty": (caption or {}).get("uncertainty"),
                 "caption_generation": (caption or {}).get("caption_generation"),

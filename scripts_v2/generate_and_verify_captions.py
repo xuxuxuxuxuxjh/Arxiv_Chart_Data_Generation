@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -18,7 +19,7 @@ from common_v2 import (
 )
 
 
-CAPTION_SCHEMA_VERSION = "kimi_caption_no_verify_v1"
+CAPTION_SCHEMA_VERSION = "kimi_caption_thinking_no_verify_v2"
 
 
 CAPTION_PROMPT = """Describe this chart in detail using the chart image and the provided caption_latex.
@@ -64,9 +65,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--image-max-pixels", type=int, default=1000000)
-    parser.add_argument("--max-tokens", type=int, default=8192)
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--image-max-pixels", type=int, default=0, help="0 sends the original image without resizing.")
+    parser.add_argument("--max-tokens", type=int, default=64000)
+    parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument(
         "--judge-image-max-pixels",
@@ -109,10 +110,12 @@ def caption_latex_text(record: dict[str, Any]) -> str:
 
 
 def parse_caption_response(raw: str) -> dict[str, Any]:
+    think_match = re.search(r"<think>\s*(.*?)\s*</think>", raw, re.I | re.S)
+    caption_thinking = think_match.group(1).strip() if think_match else ""
     try:
         result = extract_json_object(raw)
     except Exception:
-        caption = raw.strip()
+        caption = re.sub(r"<think>.*?</think>", "", raw, flags=re.I | re.S).strip()
         if caption.lower().startswith("```"):
             caption = caption.strip("`").strip()
         result = {
@@ -120,6 +123,7 @@ def parse_caption_response(raw: str) -> dict[str, Any]:
             "visible_elements": {"chart_types": [], "axes": [], "series_or_panels": [], "main_trends": []},
             "uncertainty": ["caption_response_was_not_json"],
         }
+    result["caption_thinking"] = caption_thinking
     result["raw_response"] = raw
     return result
 
@@ -167,6 +171,7 @@ def generate_caption(record: dict[str, Any], args: argparse.Namespace) -> dict[s
         "task_type": "dense_caption",
         "evidence_source": "image_and_caption_latex",
         "dense_caption": result.get("dense_caption", ""),
+        "caption_thinking": result.get("caption_thinking", ""),
         "visible_elements": result.get("visible_elements", {}),
         "uncertainty": result.get("uncertainty", []),
         "caption_generation": {
@@ -176,10 +181,16 @@ def generate_caption(record: dict[str, Any], args: argparse.Namespace) -> dict[s
             "model_config": {
                 "max_tokens": args.max_tokens,
                 "image_max_pixels": args.image_max_pixels,
+                "temperature": 1,
+                "top_p": 0.95,
+                "top_k": -1,
+                "extra_kwargs": {"thinking": {"type": "enabled"}},
+                "stream": True,
                 "timeout": args.timeout,
                 "retries": args.retries,
             },
             "caption_latex_used": bool(caption_latex),
+            "thinking": result.get("caption_thinking", ""),
             "raw_response": result.get("raw_response"),
             "dry_run": args.dry_run,
         },
