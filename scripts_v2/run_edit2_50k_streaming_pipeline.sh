@@ -19,6 +19,10 @@ Q_WORKERS="${Q_WORKERS:-8}"
 A_WORKERS="${A_WORKERS:-4}"
 T_WORKERS="${T_WORKERS:-8}"
 C_WORKERS="${C_WORKERS:-8}"
+Q_BATCH="${Q_BATCH:-16}"
+A_BATCH="${A_BATCH:-16}"
+T_BATCH="${T_BATCH:-8}"
+C_BATCH="${C_BATCH:-8}"
 
 mkdir -p "$ROOT"/logs "$ROOT"/reports "$ROOT"/tmp "$ROOT"/shards "$LOGDIR"
 
@@ -177,7 +181,7 @@ question_loop() {
       --report "$ROOT/reports/question_candidates_shard_${i}.json" \
       --group-tasks-per-image \
       --workers "$Q_WORKERS" \
-      --batch-size 16 \
+      --batch-size "$Q_BATCH" \
       --retries 1 \
       --image-max-pixels 350000
     local qcount expected
@@ -204,7 +208,7 @@ caption_loop() {
       --judge-failures "$ROOT/logs/caption_judge_failures_shard_${i}.jsonl" \
       --report "$ROOT/reports/dense_caption_verified_shard_${i}.json" \
       --workers "$C_WORKERS" \
-      --batch-size 8 \
+      --batch-size "$C_BATCH" \
       --image-max-pixels 1000000 \
       --max-tokens 8192 \
       --timeout 180 \
@@ -239,7 +243,7 @@ answer_loop() {
         --judge-failures "$ROOT/logs/answer_judge_failures_shard_${i}.jsonl" \
         --report "$ROOT/reports/answers_verified_shard_${i}.json" \
         --workers "$A_WORKERS" \
-        --batch-size 16 \
+        --batch-size "$A_BATCH" \
         --answer-samples 3 \
         --answer-retries 1 \
         --judge-retries 1 \
@@ -272,7 +276,7 @@ thinking_loop() {
         --judge-failures "$ROOT/logs/kimi_thinking_judge_failures_shard_${i}.jsonl" \
         --report "$ROOT/reports/kimi_thinking_verified_shard_${i}.json" \
         --workers "$T_WORKERS" \
-        --batch-size 8 \
+        --batch-size "$T_BATCH" \
         --image-max-pixels 0 \
         --max-tokens 64000 \
         --timeout 300 \
@@ -291,6 +295,7 @@ thinking_loop() {
 prepare_if_needed | tee -a "$LOGDIR/prepare.log"
 split_filtered_if_needed | tee -a "$LOGDIR/split.log"
 echo "STREAMING_START $(date -Is)" | tee -a "$LOGDIR/status.log"
+echo "STREAMING_CONFIG shards=$SHARDS q_workers=$Q_WORKERS q_batch=$Q_BATCH a_workers=$A_WORKERS a_batch=$A_BATCH t_workers=$T_WORKERS t_batch=$T_BATCH c_workers=$C_WORKERS c_batch=$C_BATCH" | tee -a "$LOGDIR/status.log"
 
 for i in $(seq 0 $((SHARDS - 1))); do
   question_loop "$i" > "$LOGDIR/question_stream_shard_${i}.log" 2>&1 & echo $! > "$LOGDIR/question_stream_shard_${i}.pid"
