@@ -1336,12 +1336,39 @@ work/logs/kimi_thinking_judge_failures.jsonl
 ### 10. Caption Generation，无单独 Verify
 
 - [x] caption 使用 `common_v2.kimi_messages_generate`，实际 transport 是 `/v1/chat/completions` streaming。
-- [x] `generate_and_verify_captions.py` 默认 `image_max_pixels=1000000`。
-- [x] `max_tokens=8192`。
+- [x] caption generation 设置和 Kimi thinking generation 对齐。
+- [x] `generate_and_verify_captions.py` 默认不 resize 图片，直接发送原图：
+
+```text
+image_max_pixels = 0
+```
+
+- [x] `max_tokens=64000`。
+- [x] `timeout=300`。
+- [x] Kimi caption 参数：
+
+```text
+temperature=1
+top_p=0.95
+top_k=-1
+extra_kwargs={"thinking": {"type": "enabled"}}
+stream=True
+```
+
 - [x] caption prompt 输入 image + `caption_latex`。
 - [x] `caption_latex` 用于保留领域术语、方法名、变量名、panel 描述和 series 名称。
 - [x] 不再调用 Gemini caption judger；Kimi 成功生成非空 caption 后直接进入 `dense_caption_verified.jsonl`。
 - [x] `caption_verified=true` 在当前实现中表示 caption 生成成功，不表示通过额外 Gemini verify。
+- [x] Kimi caption raw response 中的 `<think>...</think>` 会被显式解析并保存：
+
+```text
+caption_thinking
+caption_generation.thinking
+caption_generation.raw_response
+```
+
+- [x] `merge_verified_outputs.py` 会把 `caption_thinking` 合并到最终 merged record。
+- [x] `build_merged_review_static.py` 会在 review HTML 中展示 `Kimi Caption Thinking`。
 - [x] caption 输出 strict JSON：
 
 ```json
@@ -1361,6 +1388,12 @@ work/logs/kimi_thinking_judge_failures.jsonl
 
 ```text
 work/logs/caption_failures.jsonl
+```
+
+- [x] 2026-06-15 已将旧 caption v1 输出备份并清空重跑，避免新旧 caption setting 混在同一批结果中：
+
+```text
+/mnt/xjh/data/arxiv_chart/work/edit2_50k_run/backups/caption_v1_before_thinking_20260615_170212
 ```
 
 ### 11. 输出文件
@@ -1428,7 +1461,78 @@ caption_generated == true
 
 - [x] 原始失败样本全部保留在 logs，不伪装成成功 messages。
 
-### 12. 当前 10 图端到端验证结果
+### 12. Full 50k Streaming Pipeline
+
+- [x] 当前 50k 全量运行使用 streaming pipeline，而不是 stage barrier pipeline。
+- [x] 脚本：
+
+```text
+scripts_v2/run_edit2_50k_streaming_pipeline.sh
+```
+
+- [x] 运行目录：
+
+```text
+/mnt/xjh/data/arxiv_chart/work/edit2_50k_run/
+```
+
+- [x] 实时产物写在 shard 文件中，根目录 `answers_verified.jsonl`、`kimi_thinking_verified.jsonl`、`dense_caption_verified.jsonl`、`merged.jsonl` 只在 pipeline 结束后 concat/merge：
+
+```text
+shards/question_candidates_shard_*.jsonl
+shards/answers_raw_shard_*.jsonl
+shards/answers_verified_shard_*.jsonl
+shards/kimi_thinking_raw_shard_*.jsonl
+shards/kimi_thinking_verified_shard_*.jsonl
+shards/dense_caption_raw_shard_*.jsonl
+shards/dense_caption_verified_shard_*.jsonl
+```
+
+- [x] streaming 逻辑：
+
+```text
+question_loop 继续补 question candidates
+answer_loop   立即消费新增 question candidates
+thinking_loop 立即消费新增 answers_verified
+caption_loop  并行生成 dense caption
+```
+
+- [x] offset 文件只在下游脚本成功后提交；如果 worker 被杀，未提交 batch 会重新进入处理，脚本通过已存在 raw/verified id 跳过已完成记录。
+
+- [x] 当前高并发运行参数：
+
+```text
+SHARDS=8
+Q_WORKERS=8    Q_BATCH=32
+A_WORKERS=16   A_BATCH=64
+T_WORKERS=24   T_BATCH=32
+C_WORKERS=24   C_BATCH=32
+C_IMAGE_MAX_PIXELS=0
+C_MAX_TOKENS=64000
+C_TIMEOUT=300
+```
+
+- [x] 2026-06-15 caption v2 重跑后抽检：
+
+```text
+caption_checked: 100
+with_caption_thinking: 100
+with_raw <think>...</think>: 100
+```
+
+- [x] 2026-06-15 19:29:14 +08:00 实时进度：
+
+```text
+filtered images:       50,000
+question candidates:  400,000
+caption verified v2:    6,234
+answers raw:           39,594
+answers verified:      27,389
+thinking raw:          26,262
+thinking verified:     26,111
+```
+
+### 13. 当前 10 图端到端验证结果
 
 执行脚本：
 
