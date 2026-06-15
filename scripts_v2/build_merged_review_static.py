@@ -71,7 +71,10 @@ def answer_reasoning(record: dict[str, Any]) -> str:
 
 def caption_reasoning(record: dict[str, Any]) -> str:
     generation = record.get("caption_generation") or {}
-    return str(record.get("caption_thinking") or generation.get("thinking") or "")
+    thinking = str(record.get("caption_thinking") or generation.get("thinking") or "")
+    if thinking and "<think>" not in thinking:
+        return f"<think>\n{thinking}\n</think>"
+    return thinking
 
 
 def compact_json(value: Any, limit: int = 1200) -> str:

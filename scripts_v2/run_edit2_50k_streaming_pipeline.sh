@@ -26,6 +26,11 @@ C_BATCH="${C_BATCH:-8}"
 C_IMAGE_MAX_PIXELS="${C_IMAGE_MAX_PIXELS:-0}"
 C_MAX_TOKENS="${C_MAX_TOKENS:-64000}"
 C_TIMEOUT="${C_TIMEOUT:-300}"
+A_TARGET_VERIFIED="${A_TARGET_VERIFIED:-0}"
+T_TARGET_VERIFIED="${T_TARGET_VERIFIED:-0}"
+C_TARGET_VERIFIED="${C_TARGET_VERIFIED:-0}"
+A_INPUT_CHUNK_LINES="${A_INPUT_CHUNK_LINES:-1024}"
+T_INPUT_CHUNK_LINES="${T_INPUT_CHUNK_LINES:-1024}"
 
 mkdir -p "$ROOT"/logs "$ROOT"/reports "$ROOT"/tmp "$ROOT"/shards "$LOGDIR"
 
@@ -37,6 +42,22 @@ from pathlib import Path
 p = Path(sys.argv[1])
 print(sum(1 for line in p.open("rb") if line.strip()) if p.exists() else 0)
 PY
+}
+
+target_for_shard() {
+  local total="$1"
+  local i="$2"
+  if [ "$total" = "0" ]; then
+    echo 0
+    return
+  fi
+  local base=$((total / SHARDS))
+  local rem=$((total % SHARDS))
+  if [ "$i" -lt "$rem" ]; then
+    echo $((base + 1))
+  else
+    echo "$base"
+  fi
 }
 
 prepare_if_needed() {
@@ -142,13 +163,15 @@ PY
 
 write_new_lines() {
   local src="$1" dst="$2" offset_file="$3"
-  python3 - "$src" "$dst" "$offset_file" <<'PY'
+  local limit="${4:-0}"
+  python3 - "$src" "$dst" "$offset_file" "$limit" <<'PY'
 from pathlib import Path
 import sys
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 off = Path(sys.argv[3])
+limit = int(sys.argv[4])
 start = int(off.read_text().strip()) if off.exists() and off.read_text().strip() else 0
 lines = []
 if src.exists():
@@ -156,6 +179,8 @@ if src.exists():
         for idx, line in enumerate(f):
             if idx >= start and line.strip():
                 lines.append(line)
+                if limit > 0 and len(lines) >= limit:
+                    break
 dst.parent.mkdir(parents=True, exist_ok=True)
 with dst.open("w", encoding="utf-8") as w:
     w.writelines(lines)
@@ -201,8 +226,16 @@ question_loop() {
 caption_loop() {
   local i="$1"
   local name="caption_shard_${i}"
+  local target
+  target=$(target_for_shard "$C_TARGET_VERIFIED" "$i")
   echo "LOOP_START $name $(date -Is)" >> "$LOGDIR/status.log"
   while true; do
+    local current
+    current=$(count_file "$ROOT/shards/dense_caption_verified_shard_${i}.jsonl")
+    if [ "$target" != "0" ] && [ "$current" -ge "$target" ]; then
+      echo "LOOP_TARGET_REACHED $name verified=$current target=$target $(date -Is)" >> "$LOGDIR/status.log"
+      break
+    fi
     python3 scripts_v2/generate_and_verify_captions.py \
       --input "$ROOT/shards/filtered_shard_${i}.jsonl" \
       --raw-out "$ROOT/shards/dense_caption_raw_shard_${i}.jsonl" \
@@ -230,12 +263,28 @@ caption_loop() {
 answer_loop() {
   local i="$1"
   local name="answer_shard_${i}"
+  local target
+  target=$(target_for_shard "$A_TARGET_VERIFIED" "$i")
   echo "LOOP_START $name $(date -Is)" >> "$LOGDIR/status.log"
   while true; do
+    local current
+    current=$(count_file "$ROOT/shards/answers_verified_shard_${i}.jsonl")
+    if [ "$target" != "0" ] && [ "$current" -ge "$target" ]; then
+      echo "LOOP_TARGET_REACHED $name verified=$current target=$target $(date -Is)" >> "$LOGDIR/status.log"
+      break
+    fi
     local new_input="$ROOT/shards/question_candidates_for_answer_new_shard_${i}.jsonl"
     local offset_file="$ROOT/shards/question_candidates_for_answer_shard_${i}.offset"
     local n
-    n=$(write_new_lines "$ROOT/shards/question_candidates_shard_${i}.jsonl" "$new_input" "$offset_file")
+    if [ "$target" = "0" ]; then
+      n=$(write_new_lines "$ROOT/shards/question_candidates_shard_${i}.jsonl" "$new_input" "$offset_file")
+    else
+      local remaining limit
+      remaining=$((target - current))
+      limit="$A_INPUT_CHUNK_LINES"
+      if [ "$remaining" -lt "$limit" ]; then limit="$remaining"; fi
+      n=$(write_new_lines "$ROOT/shards/question_candidates_shard_${i}.jsonl" "$new_input" "$offset_file" "$limit")
+    fi
     if [ "$n" != "0" ]; then
       python3 scripts_v2/generate_and_verify_answers.py \
         --input "$new_input" \
@@ -264,12 +313,28 @@ answer_loop() {
 thinking_loop() {
   local i="$1"
   local name="thinking_shard_${i}"
+  local target
+  target=$(target_for_shard "$T_TARGET_VERIFIED" "$i")
   echo "LOOP_START $name $(date -Is)" >> "$LOGDIR/status.log"
   while true; do
+    local current
+    current=$(count_file "$ROOT/shards/kimi_thinking_verified_shard_${i}.jsonl")
+    if [ "$target" != "0" ] && [ "$current" -ge "$target" ]; then
+      echo "LOOP_TARGET_REACHED $name verified=$current target=$target $(date -Is)" >> "$LOGDIR/status.log"
+      break
+    fi
     local new_input="$ROOT/shards/answers_verified_for_thinking_new_shard_${i}.jsonl"
     local offset_file="$ROOT/shards/answers_verified_for_thinking_shard_${i}.offset"
     local n
-    n=$(write_new_lines "$ROOT/shards/answers_verified_shard_${i}.jsonl" "$new_input" "$offset_file")
+    if [ "$target" = "0" ]; then
+      n=$(write_new_lines "$ROOT/shards/answers_verified_shard_${i}.jsonl" "$new_input" "$offset_file")
+    else
+      local remaining limit
+      remaining=$((target - current))
+      limit="$T_INPUT_CHUNK_LINES"
+      if [ "$remaining" -lt "$limit" ]; then limit="$remaining"; fi
+      n=$(write_new_lines "$ROOT/shards/answers_verified_shard_${i}.jsonl" "$new_input" "$offset_file" "$limit")
+    fi
     if [ "$n" != "0" ]; then
       python3 scripts_v2/generate_and_verify_thinking.py \
         --input "$new_input" \
@@ -298,7 +363,7 @@ thinking_loop() {
 prepare_if_needed | tee -a "$LOGDIR/prepare.log"
 split_filtered_if_needed | tee -a "$LOGDIR/split.log"
 echo "STREAMING_START $(date -Is)" | tee -a "$LOGDIR/status.log"
-echo "STREAMING_CONFIG shards=$SHARDS q_workers=$Q_WORKERS q_batch=$Q_BATCH a_workers=$A_WORKERS a_batch=$A_BATCH t_workers=$T_WORKERS t_batch=$T_BATCH c_workers=$C_WORKERS c_batch=$C_BATCH c_image_max_pixels=$C_IMAGE_MAX_PIXELS c_max_tokens=$C_MAX_TOKENS c_timeout=$C_TIMEOUT" | tee -a "$LOGDIR/status.log"
+echo "STREAMING_CONFIG shards=$SHARDS q_workers=$Q_WORKERS q_batch=$Q_BATCH a_workers=$A_WORKERS a_batch=$A_BATCH t_workers=$T_WORKERS t_batch=$T_BATCH c_workers=$C_WORKERS c_batch=$C_BATCH c_image_max_pixels=$C_IMAGE_MAX_PIXELS c_max_tokens=$C_MAX_TOKENS c_timeout=$C_TIMEOUT a_target_verified=$A_TARGET_VERIFIED t_target_verified=$T_TARGET_VERIFIED c_target_verified=$C_TARGET_VERIFIED a_input_chunk_lines=$A_INPUT_CHUNK_LINES t_input_chunk_lines=$T_INPUT_CHUNK_LINES" | tee -a "$LOGDIR/status.log"
 
 for i in $(seq 0 $((SHARDS - 1))); do
   question_loop "$i" > "$LOGDIR/question_stream_shard_${i}.log" 2>&1 & echo $! > "$LOGDIR/question_stream_shard_${i}.pid"
