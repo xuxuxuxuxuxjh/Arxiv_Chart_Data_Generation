@@ -14,6 +14,7 @@ from common_v2 import (
     extract_json_object,
     extract_thinking_and_final_answer,
     gemini_generate,
+    image_part_gemini,
     iter_jsonl,
     normalize_answer,
     write_json,
