@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -176,25 +176,28 @@ def answer_once(record: dict[str, Any], args: argparse.Namespace, sample_index: 
 def generate_answer_samples(record: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     if args.answer_samples != 3:
         raise ValueError("answer consistency verification requires --answer-samples 3")
-    samples: list[dict[str, Any]] = []
-    for sample_index in range(1, args.answer_samples + 1):
+
+    def generate_one_sample(sample_index: int) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(args.answer_retries + 1):
             try:
-                sample = answer_once(record, args, sample_index, attempt + 1)
+                return answer_once(record, args, sample_index, attempt + 1)
             except Exception as exc:
                 last_error = exc
                 if attempt >= args.answer_retries:
                     break
                 time.sleep(1 + attempt)
                 continue
-            samples.append(sample)
-            break
-        else:
-            last_error = RuntimeError("unreachable answer retry state")
-        if len(samples) < sample_index:
-            assert last_error is not None
-            raise RuntimeError(f"answer_sample_failed sample_index={sample_index}: {last_error!r}") from last_error
+        assert last_error is not None
+        raise RuntimeError(f"answer_sample_failed sample_index={sample_index}: {last_error!r}") from last_error
+
+    with ThreadPoolExecutor(max_workers=args.answer_samples) as executor:
+        futures = {
+            executor.submit(generate_one_sample, sample_index): sample_index
+            for sample_index in range(1, args.answer_samples + 1)
+        }
+        samples = [future.result() for future in futures]
+    samples.sort(key=lambda sample: int(sample["sample_index"]))
 
     first = samples[0]
     out = dict(record)
@@ -342,13 +345,26 @@ def main() -> int:
         records = records[: args.limit]
     print(f"answering candidates={len(records)}", flush=True)
     raw_count = verified_count = failures = 0
-    for start in range(0, len(records), args.batch_size):
-        batch = records[start : start + args.batch_size]
-        batch_start = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = {executor.submit(generate_and_judge, record, args): record for record in batch}
-            for future in as_completed(futures):
-                record = futures[future]
+    started = completed = 0
+    total = len(records)
+    max_pending = max(args.workers, args.batch_size)
+    overall_start = last_status = time.perf_counter()
+
+    def submit_next(executor: ThreadPoolExecutor, futures: dict[Any, dict[str, Any]]) -> None:
+        nonlocal started
+        while started < total and len(futures) < max_pending:
+            record = records[started]
+            futures[executor.submit(generate_and_judge, record, args)] = record
+            started += 1
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures: dict[Any, dict[str, Any]] = {}
+        submit_next(executor, futures)
+        while futures:
+            done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done_futures:
+                record = futures.pop(future)
+                completed += 1
                 try:
                     raw_record, verified = future.result()
                 except Exception as exc:
@@ -374,11 +390,18 @@ def main() -> int:
                     verified_count += 1
                 else:
                     append_jsonl(args.judge_failures, [raw_record])
-        print(
-            f"answers raw={raw_count} verified={verified_count} failures={failures} "
-            f"done={min(start + len(batch), len(records))}/{len(records)} elapsed={time.perf_counter() - batch_start:.1f}s",
-            flush=True,
-        )
+            submit_next(executor, futures)
+            now = time.perf_counter()
+            if completed == total or completed % max(1, min(args.batch_size, 16)) == 0 or now - last_status >= 30:
+                elapsed = now - overall_start
+                rate = completed / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"answers raw={raw_count} verified={verified_count} failures={failures} "
+                    f"done={completed}/{total} started={started} pending={len(futures)} "
+                    f"elapsed={elapsed:.1f}s rate={rate:.3f}/s",
+                    flush=True,
+                )
+                last_status = now
     write_json(
         args.report,
         {
