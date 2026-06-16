@@ -28,6 +28,9 @@ T_JUDGE_IMAGE_MAX_PIXELS="${T_JUDGE_IMAGE_MAX_PIXELS:-350000}"
 C_IMAGE_MAX_PIXELS="${C_IMAGE_MAX_PIXELS:-0}"
 KIMI_MAX_TOKENS="${KIMI_MAX_TOKENS:-64000}"
 KIMI_TIMEOUT="${KIMI_TIMEOUT:-300}"
+QUESTION_TARGET="${QUESTION_TARGET:-8000}"
+QUESTION_GROUP_ROUNDS="${QUESTION_GROUP_ROUNDS:-3}"
+QUESTION_SINGLE_ROUNDS="${QUESTION_SINGLE_ROUNDS:-2}"
 
 mkdir -p "$ROOT"/logs "$ROOT"/reports "$ROOT"/tmp "$LOGDIR"
 
@@ -42,7 +45,7 @@ PY
 }
 
 echo "CHARXIV_PIPELINE_START $(date -Is)" | tee -a "$LOGDIR/status.log"
-echo "CONFIG image_dir=$IMAGE_DIR root=$ROOT q_workers=$Q_WORKERS a_workers=$A_WORKERS t_workers=$T_WORKERS c_workers=$C_WORKERS q_batch=$Q_BATCH a_batch=$A_BATCH t_batch=$T_BATCH c_batch=$C_BATCH q_image_max_pixels=$Q_IMAGE_MAX_PIXELS a_image_max_pixels=$A_IMAGE_MAX_PIXELS t_image_max_pixels=$T_IMAGE_MAX_PIXELS c_image_max_pixels=$C_IMAGE_MAX_PIXELS kimi_max_tokens=$KIMI_MAX_TOKENS kimi_timeout=$KIMI_TIMEOUT" | tee -a "$LOGDIR/status.log"
+echo "CONFIG image_dir=$IMAGE_DIR root=$ROOT q_workers=$Q_WORKERS a_workers=$A_WORKERS t_workers=$T_WORKERS c_workers=$C_WORKERS q_batch=$Q_BATCH a_batch=$A_BATCH t_batch=$T_BATCH c_batch=$C_BATCH q_image_max_pixels=$Q_IMAGE_MAX_PIXELS a_image_max_pixels=$A_IMAGE_MAX_PIXELS t_image_max_pixels=$T_IMAGE_MAX_PIXELS c_image_max_pixels=$C_IMAGE_MAX_PIXELS kimi_max_tokens=$KIMI_MAX_TOKENS kimi_timeout=$KIMI_TIMEOUT question_target=$QUESTION_TARGET question_group_rounds=$QUESTION_GROUP_ROUNDS question_single_rounds=$QUESTION_SINGLE_ROUNDS" | tee -a "$LOGDIR/status.log"
 
 python3 - "$IMAGE_DIR" "$ROOT/filtered_charts_2020_2025.jsonl" <<'PY'
 import json
@@ -93,17 +96,38 @@ if len(records) != 1000:
 PY
 
 echo "QUESTION_START $(date -Is)" | tee -a "$LOGDIR/status.log"
-python3 scripts_v2/generate_question_candidates.py \
-  --input "$ROOT/filtered_charts_2020_2025.jsonl" \
-  --out "$ROOT/question_candidates.jsonl" \
-  --failures "$ROOT/logs/question_generation_failures.jsonl" \
-  --report "$ROOT/reports/question_candidates.json" \
-  --group-tasks-per-image \
-  --workers "$Q_WORKERS" \
-  --batch-size "$Q_BATCH" \
-  --retries 1 \
-  --image-max-pixels "$Q_IMAGE_MAX_PIXELS" \
-  2>&1 | tee "$LOGDIR/question.log"
+for round in $(seq 1 "$QUESTION_GROUP_ROUNDS"); do
+  current=$(count_file "$ROOT/question_candidates.jsonl")
+  if [ "$current" -ge "$QUESTION_TARGET" ]; then break; fi
+  echo "QUESTION_GROUP_ROUND_START round=$round current=$current $(date -Is)" | tee -a "$LOGDIR/status.log"
+  python3 scripts_v2/generate_question_candidates.py \
+    --input "$ROOT/filtered_charts_2020_2025.jsonl" \
+    --out "$ROOT/question_candidates.jsonl" \
+    --failures "$ROOT/logs/question_generation_failures.jsonl" \
+    --report "$ROOT/reports/question_candidates.json" \
+    --group-tasks-per-image \
+    --workers "$Q_WORKERS" \
+    --batch-size "$Q_BATCH" \
+    --retries 1 \
+    --image-max-pixels "$Q_IMAGE_MAX_PIXELS" \
+    2>&1 | tee -a "$LOGDIR/question.log"
+done
+
+for round in $(seq 1 "$QUESTION_SINGLE_ROUNDS"); do
+  current=$(count_file "$ROOT/question_candidates.jsonl")
+  if [ "$current" -ge "$QUESTION_TARGET" ]; then break; fi
+  echo "QUESTION_SINGLE_ROUND_START round=$round current=$current $(date -Is)" | tee -a "$LOGDIR/status.log"
+  python3 scripts_v2/generate_question_candidates.py \
+    --input "$ROOT/filtered_charts_2020_2025.jsonl" \
+    --out "$ROOT/question_candidates.jsonl" \
+    --failures "$ROOT/logs/question_generation_failures.jsonl" \
+    --report "$ROOT/reports/question_candidates.json" \
+    --workers "$Q_WORKERS" \
+    --batch-size "$Q_BATCH" \
+    --retries 1 \
+    --image-max-pixels "$Q_IMAGE_MAX_PIXELS" \
+    2>&1 | tee -a "$LOGDIR/question.log"
+done
 echo "QUESTION_DONE $(date -Is) count=$(count_file "$ROOT/question_candidates.jsonl")" | tee -a "$LOGDIR/status.log"
 
 echo "ANSWER_START $(date -Is)" | tee -a "$LOGDIR/status.log"
