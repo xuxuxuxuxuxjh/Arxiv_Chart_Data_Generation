@@ -9,7 +9,7 @@ export ARXIV_CHART_EDIT2="${ARXIV_CHART_EDIT2:-/mnt/xjh/data/arxiv_chart/work/ed
 export PYTHONUNBUFFERED=1
 
 ROOT="$ARXIV_CHART_EDIT2"
-LOGDIR="$ROOT/run_logs_streaming_continue"
+LOGDIR="${CHARXIV_STREAM_LOGDIR:-$ROOT/run_logs_streaming_continue}"
 
 A_WORKERS="${A_WORKERS:-64}"
 A_BATCH="${A_BATCH:-256}"
